@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+dist-ssr/
+**/dist/
+**/dist-ssr/
+
+# Logs and runtime output
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Local environment
+*.local
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Tool caches
+.eslintcache
+*.tsbuildinfo
+coverage/
+__screenshots__/
+
+# Vite temporary files
+*.timestamp-*-*.mjs

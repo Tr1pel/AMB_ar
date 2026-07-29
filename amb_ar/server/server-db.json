@@ -1,0 +1,478 @@
+{
+  "accounts": [
+    {
+      "id": "account-admin-main",
+      "loginNumber": "1001",
+      "fullName": "Администратор АМБАР",
+      "role": "admin",
+      "isActive": true,
+      "createdAt": 1717113600000,
+      "updatedAt": 1717113600000,
+      "_syncStatus": "synced",
+      "_lastModified": 1717113600000,
+      "_localVersion": "server-seed-admin"
+    },
+    {
+      "id": "account-worker-ivanov",
+      "loginNumber": "2001",
+      "fullName": "Иванов Иван Иванович",
+      "role": "worker",
+      "isActive": true,
+      "createdAt": 1717113600000,
+      "updatedAt": 1717113600000,
+      "_syncStatus": "synced",
+      "_lastModified": 1717113600000,
+      "_localVersion": "server-seed-worker-ivanov"
+    },
+    {
+      "id": "account-worker-petrova",
+      "loginNumber": "2002",
+      "fullName": "Петрова Анна Сергеевна",
+      "role": "worker",
+      "isActive": true,
+      "createdAt": 1717113600000,
+      "updatedAt": 1717113600000,
+      "_syncStatus": "synced",
+      "_lastModified": 1717113600000,
+      "_localVersion": "server-seed-worker-petrova"
+    }
+  ],
+  "reportTemplateOptions": [
+    {
+      "id": "template-product-sweet-red-pepper",
+      "field": "productId",
+      "label": "Перец красный сладкий 1 кг",
+      "value": "sweet-red-pepper",
+      "category": "Овощи",
+      "sortOrder": 1,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-c4a20a48-4edc-48a2-945a-884368a438b6"
+    },
+    {
+      "id": "template-product-fresh-vegetables",
+      "field": "productId",
+      "label": "Свежие овощи",
+      "value": "fresh-vegetables",
+      "category": "Склад холодного хранения",
+      "sortOrder": 2,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-9ff17218-a05d-4bd9-886a-50e713bef8f8"
+    },
+    {
+      "id": "template-product-dairy",
+      "field": "productId",
+      "label": "Молочная продукция",
+      "value": "dairy",
+      "category": "Склад холодного хранения",
+      "sortOrder": 3,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-fb6bc2e0-80f5-4223-9a2e-8e1b264d8f78"
+    },
+    {
+      "id": "template-product-frozen-meat",
+      "field": "productId",
+      "label": "Замороженное мясо",
+      "value": "frozen-meat",
+      "category": "Морозильный склад",
+      "sortOrder": 4,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-1216cace-b410-44f8-9879-fee07a0f6f8c"
+    },
+    {
+      "id": "template-product-dry-goods",
+      "field": "productId",
+      "label": "Сухие товары",
+      "value": "dry-goods",
+      "category": "Основной склад",
+      "sortOrder": 5,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-94ddf3d9-657a-4dfc-bad5-ce57c5b639cd"
+    },
+    {
+      "id": "template-package-1kg",
+      "field": "packageName",
+      "label": "1 кг",
+      "value": "1 кг",
+      "category": "Фасовка",
+      "sortOrder": 1,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-109edbf8-0252-4791-b37c-765f598e0880"
+    },
+    {
+      "id": "template-package-5kg",
+      "field": "packageName",
+      "label": "5 кг",
+      "value": "5 кг",
+      "category": "Фасовка",
+      "sortOrder": 2,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-e2f54076-a713-4f47-a099-644482008fb2"
+    },
+    {
+      "id": "template-packing-box",
+      "field": "packingKind",
+      "label": "Картонная коробка",
+      "value": "Картонная коробка",
+      "category": "Упаковка",
+      "sortOrder": 1,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-5bb40ad5-f3ca-4f03-bfbf-8ccaee1d2cdd"
+    },
+    {
+      "id": "template-packing-plastic",
+      "field": "packingKind",
+      "label": "Пластиковый ящик",
+      "value": "Пластиковый ящик",
+      "category": "Упаковка",
+      "sortOrder": 2,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-65838346-1b38-4b46-bd9d-356772eadce2"
+    },
+    {
+      "id": "template-temperatureViolation-no",
+      "field": "temperatureViolation",
+      "label": "Нет",
+      "value": "Нет",
+      "category": "Нарушение температуры",
+      "sortOrder": 1,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-58465db0-4eb0-404a-86f1-507b1fc397a3"
+    },
+    {
+      "id": "template-temperatureViolation-yes",
+      "field": "temperatureViolation",
+      "label": "Да",
+      "value": "Да",
+      "category": "Нарушение температуры",
+      "sortOrder": 2,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-3dd42d43-7818-4ff3-92c7-405c393d6c2b"
+    },
+    {
+      "id": "template-thermographPresence-no",
+      "field": "thermographPresence",
+      "label": "Нет",
+      "value": "Нет",
+      "category": "Наличие термографов",
+      "sortOrder": 1,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-b6d3614f-c792-4649-b11d-b778b9433c49"
+    },
+    {
+      "id": "template-thermographPresence-yes",
+      "field": "thermographPresence",
+      "label": "Да",
+      "value": "Да",
+      "category": "Наличие термографов",
+      "sortOrder": 2,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-16799d14-c661-4c70-8ddd-c639d87c77ef"
+    },
+    {
+      "id": "template-thermographViolation-no",
+      "field": "thermographViolation",
+      "label": "Нет",
+      "value": "Нет",
+      "category": "Нарушение термографов",
+      "sortOrder": 1,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-6d9cf6a8-e28a-4d67-a938-b09c9a26be65"
+    },
+    {
+      "id": "template-thermographViolation-yes",
+      "field": "thermographViolation",
+      "label": "Да",
+      "value": "Да",
+      "category": "Нарушение термографов",
+      "sortOrder": 2,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-5c6b1f19-1937-4f3a-b23b-c569c212dd8a"
+    },
+    {
+      "id": "template-caliberPassportMatch-no",
+      "field": "caliberPassportMatch",
+      "label": "Нет",
+      "value": "Нет",
+      "category": "Калибр соответствует ПК",
+      "sortOrder": 1,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-1236d72a-2be6-4abf-b6dd-2ec8588f0c32"
+    },
+    {
+      "id": "template-caliberPassportMatch-yes",
+      "field": "caliberPassportMatch",
+      "label": "Да",
+      "value": "Да",
+      "category": "Калибр соответствует ПК",
+      "sortOrder": 2,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-76d4d73d-d691-4a60-a224-4cd4a4f81f61"
+    },
+    {
+      "id": "template-varietyPassportMatch-no",
+      "field": "varietyPassportMatch",
+      "label": "Нет",
+      "value": "Нет",
+      "category": "Сорт соответствует ПК",
+      "sortOrder": 1,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-0283da3b-955f-4a84-8359-f279520d885b"
+    },
+    {
+      "id": "template-varietyPassportMatch-yes",
+      "field": "varietyPassportMatch",
+      "label": "Да",
+      "value": "Да",
+      "category": "Сорт соответствует ПК",
+      "sortOrder": 2,
+      "createdAt": 1783535942398,
+      "updatedAt": 1783535942398,
+      "_syncStatus": "synced",
+      "_lastModified": 1783535942398,
+      "_localVersion": "1783535942398-59bedc58-a5c8-4df8-bab3-1ec5ebc6e55d"
+    },
+    {
+      "id": "templateOption_dd48bb49-0c58-4926-97ae-88f7700c02a5",
+      "field": "productId",
+      "label": "А",
+      "value": "А",
+      "category": "Поставщик",
+      "sortOrder": 6,
+      "createdAt": 1783538115350,
+      "updatedAt": 1783538141067,
+      "_syncStatus": "synced",
+      "_lastModified": 1783538141067,
+      "_localVersion": "1783538141067-0b84aa65-0c4f-4c2c-a3b3-e755d831f24b",
+      "_deletedAt": 1783538141067
+    },
+    {
+      "id": "templateOption_a6e1ebe1-f298-484a-b40c-7bcba6041874",
+      "field": "productId",
+      "label": "уУ",
+      "value": "уУ",
+      "category": "Фасовка",
+      "sortOrder": 6,
+      "createdAt": 1783538161917,
+      "updatedAt": 1783538170189,
+      "_syncStatus": "synced",
+      "_lastModified": 1783538170189,
+      "_localVersion": "1783538170189-da8bd02a-cf11-47e1-9bc7-e3af179de6da",
+      "_deletedAt": 1783538170189
+    },
+    {
+      "id": "templateOption_5a14f640-5838-4b60-a913-e2f3c9ba1f62",
+      "field": "productId",
+      "label": "фывф",
+      "value": "фывф",
+      "category": "313212",
+      "sortOrder": 6,
+      "createdAt": 1783538175126,
+      "updatedAt": 1783538177676,
+      "_syncStatus": "synced",
+      "_lastModified": 1783538177676,
+      "_localVersion": "1783538177676-66d1a05b-62ed-4daf-907a-3f03db7a2791",
+      "_deletedAt": 1783538177676
+    }
+  ],
+  "reportDrafts": [
+    {
+      "id": "report_29503537-1848-483e-a99a-3d46942d8a26",
+      "status": "ready",
+      "templateVersion": "quality-inspection-v1",
+      "workerAccountId": "account-worker-ivanov",
+      "productId": "sweet-red-pepper",
+      "productName": "Перец красный сладкий 1 кг",
+      "inspectorName": "Иванов Иван Иванович",
+      "mainInfo": {
+        "orderNumber": "123",
+        "zost": "123123",
+        "shipper": "ыввфв",
+        "trailerNumber": "123",
+        "placeOfSurvey": "вфыв",
+        "productName": "Перец красный сладкий 1 кг",
+        "packageName": "1 кг",
+        "plu": "12",
+        "openingDate": "1212-12-12",
+        "surveyDate": "1212-12-12",
+        "packingKind": "Картонная коробка",
+        "boxMarking": "12"
+      },
+      "temperatureInfo": {
+        "storageTemperature": "121",
+        "pulpTemperature": "121",
+        "temperatureViolation": "Нет",
+        "sealNumber": "12",
+        "thermographPresence": "Нет",
+        "thermographViolation": "Нет"
+      },
+      "inspectionResults": {
+        "firstCategoryPercent": "123",
+        "firstCategoryNonStandardPercent": "123",
+        "secondCategoryNonStandardPercent": "123123",
+        "wastePercent": "123",
+        "density": "12313",
+        "brix": "123123",
+        "caliber": "123123",
+        "caliberPassportMatch": "Да",
+        "caliberMismatch": "123123",
+        "variety": "123123",
+        "varietyPassportMatch": "Да"
+      },
+      "descriptions": {
+        "secondClassDefects": "123131231",
+        "waste": "1231",
+        "caliberMismatch": "123123123"
+      },
+      "expertConclusion": "1312312",
+      "sampling": {
+        "palletCount": 26,
+        "sampleCount": 15,
+        "seed": "1783538122644",
+        "points": [
+          {
+            "id": "sample-1",
+            "pallet": "25",
+            "place": "Лево_2 Верх_11 в глубь"
+          },
+          {
+            "id": "sample-2",
+            "pallet": "1",
+            "place": "Право_2 Верх_10"
+          },
+          {
+            "id": "sample-3",
+            "pallet": "8",
+            "place": "Право_1 Верх_4 в глубь"
+          },
+          {
+            "id": "sample-4",
+            "pallet": "21",
+            "place": "Право_1 Верх_7 в глубь"
+          },
+          {
+            "id": "sample-5",
+            "pallet": "3",
+            "place": "Лево_1 Верх_5 в глубь"
+          },
+          {
+            "id": "sample-6",
+            "pallet": "10",
+            "place": "Лево_2 Верх_5"
+          },
+          {
+            "id": "sample-7",
+            "pallet": "13",
+            "place": "Право_1 Верх_10 в глубь"
+          },
+          {
+            "id": "sample-8",
+            "pallet": "19",
+            "place": "Право_1 Верх_7"
+          },
+          {
+            "id": "sample-9",
+            "pallet": "9",
+            "place": "Право_2 Верх_7"
+          },
+          {
+            "id": "sample-10",
+            "pallet": "24",
+            "place": "Право_1 Верх_6 в глубь"
+          },
+          {
+            "id": "sample-11",
+            "pallet": "14",
+            "place": "Право_1 Верх_9 в глубь"
+          },
+          {
+            "id": "sample-12",
+            "pallet": "16",
+            "place": "Право_2 Верх_4"
+          },
+          {
+            "id": "sample-13",
+            "pallet": "6",
+            "place": "Лево_1 Верх_7 в глубь"
+          },
+          {
+            "id": "sample-14",
+            "pallet": "23",
+            "place": "Право_1 Верх_2 в глубь"
+          },
+          {
+            "id": "sample-15",
+            "pallet": "26",
+            "place": "Право_2 Верх_10"
+          }
+        ]
+      },
+      "signatures": {
+        "reportIssuedDate": "1212-12-12",
+        "expertName": "132131231",
+        "retailRepresentativeName": "123123"
+      },
+      "photoIds": [],
+      "createdAt": 1783538305585,
+      "updatedAt": 1783538305585,
+      "_syncStatus": "synced",
+      "_lastModified": 1783538305585,
+      "_localVersion": "1783538305585-e9c8ae93-a8f8-48ec-bf0d-216f5c9328e6",
+      "_serverTimestamp": 1783538305607,
+      "_serverVersion": "1783538305607-c1b82d6f-d899-45cc-8ef4-4ca5ad90726e"
+    }
+  ]
+}
