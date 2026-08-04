@@ -494,3 +494,8 @@ User marks report ready
 6. Local document generation stub, затем полноценный PDF/DOCX.
 7. Sync queue with retry/backoff/jitter and network monitor.
 8. Conflict UI and server delta sync.
+# Устаревший документ
+
+Эта схема больше не соответствует реализации. С 30 июля 2026 года приложение использует
+server-only архитектуру: HTTP API и SQLite являются единственным источником данных, IndexedDB и
+локальная синхронизация удалены. Актуальное описание находится в `amb_ar/README.md`.

@@ -1,69 +1,89 @@
-# amb_ar
+# АМБАР QC
 
-This template should help get you started developing with Vue 3 in Vite.
+Веб-приложение для контроля качества поставок на складе.
 
-## Recommended IDE Setup
+## Хранение данных
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+Приложение работает только с серверной базой данных:
 
-## Recommended Browser Setup
+- сервер — Node.js HTTP API;
+- база — SQLite (`server/amb-ar.sqlite`);
+- клиент обращается к API через `/api`;
+- отчеты, фотографии, PDF, аккаунты, справочники и макеты хранятся на сервере;
+- IndexedDB, Dexie и локальная очередь синхронизации не используются;
+- удаление сущностей выполняется через soft delete.
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+Начальные аккаунты и справочники создаются сервером непосредственно в SQLite при первом запуске.
 
-## Type Support for `.vue` Imports in TS
+## Рабочий сценарий отчета
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
+1. Работник заполняет форму; черновик и фотографии сохраняются на сервере автоматически.
+2. Черновик доступен только его автору и не показывается администратору.
+3. Кнопка «Отправить отчет администратору» переводит проверенный сервером отчет в статус
+   `ready`.
+4. Отправленный отчет нельзя изменить или удалить из аккаунта работника.
+5. Журнал администратора получает только отправленные отчеты и обновляется автоматически.
+6. Созданный PDF загружается обратно на сервер и хранится в SQLite как BLOB.
 
-## Customize configuration
+## Схема SQLite
 
-See [Vite Configuration Reference](https://vite.dev/config/).
+Приложение использует один файл `server/amb-ar.sqlite` и отдельные предметные таблицы:
 
-## Project Setup
+- `accounts`;
+- `report_template_options`;
+- `document_templates`;
+- `report_drafts`;
+- `product_photos`;
+- `generated_documents`.
+
+Связи фотографий и документов с отчетами контролируются внешними ключами. Для основных сценариев
+чтения созданы индексы по работнику, статусу, товару, категории и времени обновления. Удаленные
+записи сохраняются с `deleted_at`.
+
+Динамическая структура макетов и составные разделы отчета хранятся в проверяемых JSON-полях.
+Фотографии и PDF находятся в BLOB-полях и загружаются из SQLite только при запросе конкретного
+отчета. При запуске база автоматически переводится со старой универсальной таблицы `entities` на
+схему версии 2 без потери существующих записей.
+
+## Запуск для разработки
+
+Требуется Node.js 22.12 или новее.
 
 ```sh
 npm install
-```
-
-### Compile and Hot-Reload for Development
-
-```sh
 npm run dev
 ```
 
-This starts both parts of the app:
+Команда одновременно запускает:
 
-- API server: `http://127.0.0.1:3001`
-- Vite client: `http://127.0.0.1:5173`
+- API и SQLite на `http://127.0.0.1:3001`;
+- Vite на стандартном локальном адресе с proxy `/api` на сервер.
 
-### Server Database
-
-The server database is stored in:
-
-```sh
-server/server-db.json
-```
-
-The API server is started with:
-
-```sh
-npm run server
-```
-
-Accounts, report template options, and uploaded report records are read and written through the server API. The browser IndexedDB database is still used as the local offline cache while editing reports.
-
-### Type-Check, Compile and Minify for Production
+## Production
 
 ```sh
 npm run build
+npm start
 ```
 
-### Lint with [ESLint](https://eslint.org/)
+После сборки Node-сервер раздает содержимое `dist` и API с одного адреса.
+
+Путь к базе, адрес и порт можно настроить переменными окружения:
+
+- `AMB_AR_DATABASE_PATH`;
+- `AMB_AR_HOST` (по умолчанию `127.0.0.1`);
+- `AMB_AR_API_PORT` (по умолчанию `3001`).
+
+Для проверки серверного сценария используется команда:
 
 ```sh
-npm run lint
+npm test
 ```
+
+## Начальные аккаунты
+
+- `1001` — администратор;
+- `2001` — инспектор;
+- `2002` — инспектор.
+
+Аккаунты можно изменять в интерфейсе администратора.

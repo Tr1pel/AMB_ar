@@ -1,34 +1,48 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 
 import FormSection from '@/components/reports/FormSection.vue'
 import PhotoPicker from '@/components/reports/PhotoPicker.vue'
 import { useAuthStore } from '@/stores/auth.store'
+import { useDocumentTemplateStore } from '@/stores/document-template.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
 import { useReportTemplateStore } from '@/stores/report-template.store'
 import type {
+  DocumentTemplateField,
+  DocumentTemplateSection,
+  ReportDraft,
   ReportInspectionResults,
   ReportMainInfo,
   ReportPhotoCategory,
   ReportSamplePoint,
+  ReportTemplateField,
 } from '@/types/report'
 
-type ReportStepId =
-  | 'shipment'
-  | 'product'
-  | 'temperature'
-  | 'results'
-  | 'defects'
-  | 'sampling'
-  | 'photos'
-  | 'signatures'
+const props = defineProps<{
+  reportId: string
+}>()
+
+type ReportStepId = string
+
+interface ReportStep {
+  id: ReportStepId
+  title: string
+  subtitle: string
+}
+
+interface DynamicSelectOption {
+  id: string
+  label: string
+  value: string
+}
 
 interface LocalPhotoInput {
   id: string
   file: File
   url: string
   fileName: string
+  templateFieldId?: string
   category: ReportPhotoCategory
   caption: string
   sortOrder: number
@@ -43,11 +57,13 @@ interface FieldDescriptor<T> {
 
 const router = useRouter()
 const authStore = useAuthStore()
+const documentTemplateStore = useDocumentTemplateStore()
 const reportDraftStore = useReportDraftStore()
 const reportTemplateStore = useReportTemplateStore()
 
 const initialProductId = 'sweet-red-pepper'
 const initialExpertConclusion = ''
+const AUTOSAVE_DELAY_MS = 600
 
 const initialMainInfo = {
   orderNumber: '',
@@ -106,9 +122,16 @@ const initialSignatures = {
 }
 
 const activeStepId = ref<ReportStepId>('shipment')
+const selectedTemplateId = ref('')
 const productId = ref(initialProductId)
 const expertConclusion = ref(initialExpertConclusion)
 const photos = ref<LocalPhotoInput[]>([])
+const draftId = ref<string | null>(null)
+const autosaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
+const lastSavedAt = ref<number | null>(null)
+const isAutosaveReady = ref(false)
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null
+let activeSavePromise: Promise<ReportDraft | null> | null = null
 
 const mainInfo = reactive({ ...initialMainInfo })
 
@@ -117,6 +140,7 @@ const temperatureInfo = reactive({ ...initialTemperatureInfo })
 const inspectionResults = reactive({ ...initialInspectionResults })
 
 const descriptions = reactive({ ...initialDescriptions })
+const customFieldValues = reactive<Record<string, string>>({})
 
 const sampling = reactive({
   ...initialSampling,
@@ -125,7 +149,7 @@ const sampling = reactive({
 
 const signatures = reactive({ ...initialSignatures })
 
-const steps: Array<{ id: ReportStepId; title: string; subtitle: string }> = [
+const legacySteps: ReportStep[] = [
   {
     id: 'shipment',
     title: 'Партия',
@@ -207,12 +231,48 @@ const photoCategories: Array<{ id: ReportPhotoCategory; title: string; subtitle:
   { id: 'notStandard', title: 'Нестандарт', subtitle: 'Not correspond to the standard' },
 ]
 
-const activeStep = computed(() => steps.find((step) => step.id === activeStepId.value) ?? steps[0]!)
-const activeStepIndex = computed(() => steps.findIndex((step) => step.id === activeStepId.value))
+const templateSections = computed<DocumentTemplateSection[]>(() =>
+  [
+    ...(reportDraftStore.selectedReport?.templateSnapshot?.sections ??
+      selectedDocumentTemplate.value?.sections ??
+      []),
+  ].sort(
+    (firstSection, secondSection) => firstSection.sortOrder - secondSection.sortOrder,
+  ),
+)
+const steps = computed<ReportStep[]>(() =>
+  templateSections.value.length
+    ? templateSections.value.map((section) => ({
+        id: section.id,
+        title: section.title,
+        subtitle: section.description || 'Заполните поля этого раздела.',
+      }))
+    : legacySteps,
+)
+const activeTemplateSection = computed(() =>
+  templateSections.value.find((section) => section.id === activeStepId.value),
+)
+const templatePhotoFieldIds = computed(() =>
+  templateSections.value.flatMap((section) =>
+    section.fields
+      .filter((field) => field.type === 'photo' || field.dataPath === 'photos')
+      .map((field) => field.id),
+  ),
+)
+const activeStep = computed(
+  () =>
+    steps.value.find((step) => step.id === activeStepId.value) ?? steps.value[0] ?? legacySteps[0]!,
+)
+const activeStepIndex = computed(() =>
+  steps.value.findIndex((step) => step.id === activeStepId.value),
+)
 const isFirstStep = computed(() => activeStepIndex.value === 0)
-const isLastStep = computed(() => activeStepIndex.value === steps.length - 1)
+const isLastStep = computed(() => activeStepIndex.value === steps.value.length - 1)
 const completedStepCount = computed(() => activeStepIndex.value + 1)
 const workerFullName = computed(() => authStore.currentAccount?.fullName ?? '')
+const selectedDocumentTemplate = computed(() =>
+  documentTemplateStore.templates.find((template) => template.id === selectedTemplateId.value),
+)
 const productOptions = computed(() =>
   reportTemplateStore.productOptions.length
     ? reportTemplateStore.productOptions
@@ -239,12 +299,19 @@ const varietyPassportMatchOptions = computed(() =>
 const canSave = computed(
   () =>
     Boolean(authStore.currentAccount?.id) &&
-    Boolean(productId.value) &&
+    Boolean(selectedTemplateId.value) &&
     Boolean(workerFullName.value.trim()) &&
-    Boolean(mainInfo.orderNumber.trim()) &&
-    Boolean(mainInfo.placeOfSurvey.trim()),
+    templateSections.value.every((section) =>
+      section.fields.every((field) => !field.required || hasDynamicFieldValue(field)),
+    ),
 )
+watch(selectedTemplateId, () => {
+  const firstSection = templateSections.value[0]
 
+  if (firstSection) {
+    activeStepId.value = firstSection.id
+  }
+})
 watch(productId, (selectedProductId) => {
   const product = productOptions.value.find((option) => option.id === selectedProductId)
 
@@ -269,12 +336,84 @@ watch(productOptions, (options) => {
   }
 })
 
-onMounted(() => {
-  void reportTemplateStore.loadOptions()
+watch(
+  () => ({
+    templateId: selectedTemplateId.value,
+    productId: productId.value,
+    expertConclusion: expertConclusion.value,
+    mainInfo: { ...mainInfo },
+    temperatureInfo: { ...temperatureInfo },
+    inspectionResults: { ...inspectionResults },
+    descriptions: { ...descriptions },
+    customFieldValues: { ...customFieldValues },
+    sampling: {
+      ...sampling,
+      points: sampling.points.map((point) => ({ ...point })),
+    },
+    signatures: { ...signatures },
+    photos: photos.value.map((photo) => ({
+      id: photo.id,
+      file: photo.file,
+      templateFieldId: photo.templateFieldId,
+      caption: photo.caption,
+      category: photo.category,
+      sortOrder: photo.sortOrder,
+    })),
+  }),
+  () => {
+    if (isAutosaveReady.value) {
+      scheduleAutosave()
+    }
+  },
+  { deep: true },
+)
+
+onMounted(async () => {
+  await Promise.all([reportTemplateStore.loadOptions(), documentTemplateStore.loadTemplates()])
+
+  await reportDraftStore.loadReport(props.reportId)
+
+  if (!reportDraftStore.selectedReport) {
+    return
+  }
+
+  if (reportDraftStore.selectedReport.status !== 'draft') {
+    await router.replace({ name: 'report-details', params: { reportId: props.reportId } })
+    return
+  }
+
+  hydrateExistingReport()
+
+  isAutosaveReady.value = true
 })
 
 onUnmounted(() => {
+  clearAutosaveTimer()
   photos.value.forEach((photo) => URL.revokeObjectURL(photo.url))
+})
+
+onBeforeRouteLeave(async () => {
+  if (!isAutosaveReady.value) {
+    return true
+  }
+
+  if (activeSavePromise) {
+    const savedReport = await activeSavePromise
+
+    if (!savedReport) {
+      return false
+    }
+  }
+
+  if (autosaveTimer) {
+    clearAutosaveTimer()
+
+    if (!(await persistDraft('draft'))) {
+      return false
+    }
+  }
+
+  return autosaveState.value !== 'error'
 })
 
 function setStep(stepId: ReportStepId): void {
@@ -295,7 +434,144 @@ function hasChangedFields<T extends Record<string, string>>(
   )
 }
 
+function getDynamicFieldValue(dataPath: string): string {
+  if (dataPath === 'mainInfo.productName') {
+    return productId.value
+  }
+
+  if (dataPath === 'expertConclusion') {
+    return expertConclusion.value
+  }
+
+  if (dataPath.startsWith('custom.')) {
+    return customFieldValues[dataPath] ?? ''
+  }
+
+  const [rootKey, fieldKey] = dataPath.split('.')
+  const roots: Record<string, Record<string, unknown>> = {
+    mainInfo,
+    temperatureInfo,
+    inspectionResults,
+    descriptions,
+    signatures,
+  }
+  const root = rootKey ? roots[rootKey] : undefined
+  const value = root && fieldKey ? root[fieldKey] : undefined
+
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+}
+
+function setDynamicFieldValue(dataPath: string, value: string): void {
+  if (dataPath === 'mainInfo.productName') {
+    productId.value = value
+    return
+  }
+
+  if (dataPath === 'expertConclusion') {
+    expertConclusion.value = value
+    return
+  }
+
+  if (dataPath.startsWith('custom.')) {
+    customFieldValues[dataPath] = value
+    return
+  }
+
+  const [rootKey, fieldKey] = dataPath.split('.')
+  const roots: Record<string, Record<string, string>> = {
+    mainInfo,
+    temperatureInfo,
+    inspectionResults,
+    descriptions,
+    signatures,
+  }
+  const root = rootKey ? roots[rootKey] : undefined
+
+  if (root && fieldKey) {
+    root[fieldKey] = value
+  }
+}
+
+function getDynamicSelectOptions(field: DocumentTemplateField): DynamicSelectOption[] {
+  const embeddedOptions = [...(field.options ?? [])].sort(
+    (firstOption, secondOption) => firstOption.sortOrder - secondOption.sortOrder,
+  )
+
+  if (embeddedOptions.length) {
+    return embeddedOptions.map((option) => ({
+      id: option.id,
+      label: option.label,
+      value: option.label,
+    }))
+  }
+
+  const { dataPath } = field
+
+  if (dataPath === 'mainInfo.productName') {
+    return productOptions.value.map((option) => ({
+      id: option.id,
+      label: option.label,
+      value: option.id,
+    }))
+  }
+
+  const optionFieldMap: Partial<Record<string, ReportTemplateField>> = {
+    'mainInfo.packageName': 'packageName',
+    'mainInfo.packingKind': 'packingKind',
+    'temperatureInfo.temperatureViolation': 'temperatureViolation',
+    'temperatureInfo.thermographPresence': 'thermographPresence',
+    'temperatureInfo.thermographViolation': 'thermographViolation',
+    'inspectionResults.caliberPassportMatch': 'caliberPassportMatch',
+    'inspectionResults.varietyPassportMatch': 'varietyPassportMatch',
+  }
+  const optionField = optionFieldMap[dataPath]
+
+  if (!optionField) {
+    return []
+  }
+
+  return reportTemplateStore.getOptionsByField(optionField).map((option) => ({
+    id: option.id,
+    label: option.label,
+    value: option.value,
+  }))
+}
+
+function getDynamicInputType(field: DocumentTemplateField): string {
+  if (field.type === 'number' || field.type === 'date') {
+    return field.type
+  }
+
+  return 'text'
+}
+
+function getEventValue(event: Event): string {
+  return (event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).value
+}
+
+function hasDynamicFieldValue(field: DocumentTemplateField): boolean {
+  if (field.type === 'signature') {
+    return Boolean(workerFullName.value.trim())
+  }
+
+  if (field.type === 'photo' || field.dataPath === 'photos') {
+    return getPhotosByTemplateField(field.id).length > 0
+  }
+
+  if (field.dataPath === 'sampling.points') {
+    return sampling.points.length > 0
+  }
+
+  return Boolean(getDynamicFieldValue(field.dataPath).trim())
+}
+
 function isStepFilled(stepId: ReportStepId): boolean {
+  if (templateSections.value.length) {
+    const section = templateSections.value.find((item) => item.id === stepId)
+
+    return section?.fields.some((field) => hasDynamicFieldValue(field)) ?? false
+  }
+
   switch (stepId) {
     case 'shipment':
       return hasChangedFields(mainInfo, {
@@ -308,13 +584,16 @@ function isStepFilled(stepId: ReportStepId): boolean {
         surveyDate: initialMainInfo.surveyDate,
       })
     case 'product':
-      return productId.value !== initialProductId || hasChangedFields(mainInfo, {
-        productName: initialMainInfo.productName,
-        packageName: initialMainInfo.packageName,
-        plu: initialMainInfo.plu,
-        packingKind: initialMainInfo.packingKind,
-        boxMarking: initialMainInfo.boxMarking,
-      })
+      return (
+        productId.value !== initialProductId ||
+        hasChangedFields(mainInfo, {
+          productName: initialMainInfo.productName,
+          packageName: initialMainInfo.packageName,
+          plu: initialMainInfo.plu,
+          packingKind: initialMainInfo.packingKind,
+          boxMarking: initialMainInfo.boxMarking,
+        })
+      )
     case 'temperature':
       return hasChangedFields(temperatureInfo, initialTemperatureInfo)
     case 'results':
@@ -336,6 +615,8 @@ function isStepFilled(stepId: ReportStepId): boolean {
     case 'signatures':
       return hasChangedFields(signatures, initialSignatures)
   }
+
+  return false
 }
 
 function goToPreviousStep(): void {
@@ -343,7 +624,7 @@ function goToPreviousStep(): void {
     return
   }
 
-  const previousStep = steps[activeStepIndex.value - 1]
+  const previousStep = steps.value[activeStepIndex.value - 1]
 
   if (!previousStep) {
     return
@@ -358,7 +639,7 @@ function goToNextStep(): void {
     return
   }
 
-  const nextStep = steps[activeStepIndex.value + 1]
+  const nextStep = steps.value[activeStepIndex.value + 1]
 
   if (!nextStep) {
     return
@@ -373,19 +654,42 @@ function scrollToFormTop(): void {
 }
 
 function getPhotosByCategory(category: ReportPhotoCategory): LocalPhotoInput[] {
-  return photos.value.filter((photo) => photo.category === category)
+  return photos.value.filter((photo) => !photo.templateFieldId && photo.category === category)
 }
 
 function handlePhotoSelected(category: ReportPhotoCategory, file: File): void {
+  appendPhoto(file, category)
+}
+
+function getPhotosByTemplateField(fieldId: string): LocalPhotoInput[] {
+  const firstPhotoFieldId = templatePhotoFieldIds.value[0]
+
+  return photos.value.filter(
+    (photo) =>
+      photo.templateFieldId === fieldId ||
+      (!photo.templateFieldId && fieldId === firstPhotoFieldId),
+  )
+}
+
+function handleTemplatePhotoSelected(fieldId: string, file: File): void {
+  appendPhoto(file, 'goods', fieldId)
+}
+
+function appendPhoto(
+  file: File,
+  category: ReportPhotoCategory,
+  templateFieldId?: string,
+): void {
   const nextOrder = photos.value.length + 1
 
   photos.value = [
     ...photos.value,
     {
-      id: `${category}-${file.name}-${file.lastModified}-${nextOrder}`,
+      id: `photo_${globalThis.crypto.randomUUID()}`,
       file,
       url: URL.createObjectURL(file),
       fileName: file.name || 'Фото отчета',
+      ...(templateFieldId ? { templateFieldId } : {}),
       category,
       caption: '',
       sortOrder: nextOrder,
@@ -427,7 +731,7 @@ function generateSampling(): void {
 }
 
 async function handleSave(): Promise<void> {
-  if (!canSave.value || reportDraftStore.isSaving || !authStore.currentAccount) {
+  if (!canSave.value || !authStore.currentAccount) {
     return
   }
 
@@ -435,8 +739,103 @@ async function handleSave(): Promise<void> {
     generateSampling()
   }
 
-  const savedReport = await reportDraftStore.createReport({
-    workerAccountId: authStore.currentAccount.id,
+  isAutosaveReady.value = false
+  clearAutosaveTimer()
+
+  const savedReport = await persistDraft('ready')
+
+  if (savedReport) {
+    await router.push({ name: 'report-details', params: { reportId: savedReport.id } })
+  } else {
+    isAutosaveReady.value = true
+  }
+}
+
+function scheduleAutosave(): void {
+  clearAutosaveTimer()
+  autosaveState.value = 'idle'
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = null
+    void persistDraft('draft')
+  }, AUTOSAVE_DELAY_MS)
+}
+
+function clearAutosaveTimer(): void {
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer)
+    autosaveTimer = null
+  }
+}
+
+async function persistDraft(status: 'draft' | 'ready') {
+  if (!authStore.currentAccount) {
+    return null
+  }
+
+  if (activeSavePromise) {
+    await activeSavePromise
+  }
+
+  autosaveState.value = 'saving'
+
+  const savePromise = reportDraftStore.createReport(buildReportInput(), {
+    draftId: draftId.value ?? undefined,
+    status,
+  })
+
+  activeSavePromise = savePromise
+
+  try {
+    const savedReport = await savePromise
+
+    if (savedReport) {
+      draftId.value = savedReport.id
+      lastSavedAt.value = savedReport.updatedAt
+      autosaveState.value = 'saved'
+    } else {
+      autosaveState.value = 'error'
+    }
+
+    return savedReport
+  } finally {
+    if (activeSavePromise === savePromise) {
+      activeSavePromise = null
+    }
+  }
+}
+
+function buildReportInput() {
+  const workerAccountId = authStore.currentAccount?.id
+
+  if (!workerAccountId) {
+    throw new Error('Не выбран аккаунт работника')
+  }
+
+  const resolvedCustomFieldValues = { ...customFieldValues }
+  const resolvedSignatures = { ...signatures }
+
+  for (const field of templateSections.value.flatMap((section) => section.fields)) {
+    if (field.type !== 'signature') {
+      continue
+    }
+
+    if (field.dataPath.startsWith('custom.')) {
+      resolvedCustomFieldValues[field.dataPath] = workerFullName.value
+      continue
+    }
+
+    if (field.dataPath.startsWith('signatures.')) {
+      const signatureKey = field.dataPath.slice('signatures.'.length) as keyof typeof signatures
+
+      if (signatureKey in resolvedSignatures) {
+        resolvedSignatures[signatureKey] = workerFullName.value
+      }
+    }
+  }
+
+  return {
+    templateId: selectedTemplateId.value,
+    workerAccountId,
     productId: productId.value,
     inspectorName: workerFullName.value,
     mainInfo: { ...mainInfo },
@@ -444,23 +843,22 @@ async function handleSave(): Promise<void> {
     inspectionResults: { ...inspectionResults },
     descriptions: { ...descriptions },
     expertConclusion: expertConclusion.value,
+    customFieldValues: resolvedCustomFieldValues,
     sampling: {
       palletCount: sampling.palletCount,
       sampleCount: sampling.sampleCount,
       seed: sampling.seed,
       points: sampling.points.map((point) => ({ ...point })),
     },
-    signatures: { ...signatures },
+    signatures: resolvedSignatures,
     photos: photos.value.map((photo) => ({
+      id: photo.id,
       file: photo.file,
+      templateFieldId: photo.templateFieldId,
       category: photo.category,
       caption: photo.caption,
       sortOrder: photo.sortOrder,
     })),
-  })
-
-  if (savedReport) {
-    await router.push({ name: 'report-details', params: { reportId: savedReport.id } })
   }
 }
 
@@ -485,23 +883,54 @@ function buildSamplePlace(random: () => number): string {
 
   return `${side}_${row} Верх_${height}${depth}`
 }
+
+function hydrateExistingReport(): void {
+  const report = reportDraftStore.selectedReport
+
+  if (!report) {
+    return
+  }
+
+  draftId.value = report.id
+  selectedTemplateId.value = report.templateId ?? documentTemplateStore.activeTemplates[0]?.id ?? ''
+  productId.value = report.productId
+  expertConclusion.value = report.expertConclusion
+  Object.assign(mainInfo, report.mainInfo)
+  Object.assign(temperatureInfo, report.temperatureInfo)
+  Object.assign(inspectionResults, report.inspectionResults)
+  Object.assign(descriptions, report.descriptions)
+  Object.assign(customFieldValues, report.customFieldValues ?? {})
+  Object.assign(signatures, report.signatures)
+  sampling.palletCount = report.sampling.palletCount
+  sampling.sampleCount = report.sampling.sampleCount
+  sampling.seed = report.sampling.seed
+  sampling.points = report.sampling.points.map((point) => ({ ...point }))
+  photos.value = reportDraftStore.selectedPhotos.map((photo) => {
+    const file = new File([photo.blob], photo.fileName, {
+      type: photo.mimeType,
+      lastModified: photo.createdAt,
+    })
+
+    return {
+      id: photo.id,
+      file,
+      url: URL.createObjectURL(photo.blob),
+      fileName: photo.fileName,
+      templateFieldId: photo.templateFieldId,
+      category: photo.category,
+      caption: photo.caption,
+      sortOrder: photo.sortOrder,
+    }
+  })
+  lastSavedAt.value = report.updatedAt
+  autosaveState.value = 'saved'
+}
 </script>
 
 <template>
   <main class="screen-page report-form-page">
-    <section class="screen-heading">
-      <div>
-        <p class="screen-kicker">Новый отчет</p>
-        <h1 class="screen-title">Quality inspection report</h1>
-        <p class="screen-subtitle">
-          Заполняйте отчет по шагам. Сохранение происходит локально, синхронизация уйдет в фон.
-        </p>
-      </div>
-    </section>
-
     <div class="form-local-strip">
-      <span>Локальный черновик</span>
-      <strong>Шаг {{ completedStepCount }} из {{ steps.length }}</strong>
+      <strong>Черновик · шаг {{ completedStepCount }} из {{ steps.length }}</strong>
     </div>
 
     <form class="report-form" @submit.prevent="handleSave">
@@ -527,9 +956,163 @@ function buildSamplePlace(random: () => number): string {
       </p>
 
       <FormSection
-        v-if="activeStepId === 'shipment'"
+        v-if="activeTemplateSection"
+        :title="activeTemplateSection.title"
+        :subtitle="activeTemplateSection.description"
+      >
+        <div class="dynamic-field-grid">
+          <template v-for="field in activeTemplateSection.fields" :key="field.id">
+            <section
+              v-if="field.type === 'photo' || field.dataPath === 'photos'"
+              class="dynamic-special-block dynamic-field--full"
+            >
+              <div class="dynamic-special-block__heading">
+                <div>
+                  <h3>{{ field.label }}</h3>
+                  <p>{{ field.helpText || 'Добавьте фотографии для этого поля.' }}</p>
+                </div>
+                <strong v-if="field.required">Обязательно</strong>
+              </div>
+
+              <PhotoPicker
+                :photos="getPhotosByTemplateField(field.id)"
+                :disabled="reportDraftStore.isSaving"
+                @select-photo="(file) => handleTemplatePhotoSelected(field.id, file)"
+              />
+
+              <label
+                v-for="photo in getPhotosByTemplateField(field.id)"
+                :key="photo.id"
+                class="field-label photo-caption"
+              >
+                Подпись к фото
+                <input v-model="photo.caption" class="field-control" />
+                <button class="text-button" type="button" @click="removePhoto(photo.id)">
+                  Удалить фото
+                </button>
+              </label>
+            </section>
+
+            <section
+              v-else-if="field.dataPath === 'sampling.points'"
+              class="dynamic-special-block dynamic-field--full"
+            >
+              <div class="dynamic-special-block__heading">
+                <div>
+                  <h3>{{ field.label }}</h3>
+                  <p>{{ field.helpText || 'Сформируйте случайные точки контроля по палетам.' }}</p>
+                </div>
+                <strong v-if="field.required">Обязательно</strong>
+              </div>
+
+              <div class="sampling-grid">
+                <label class="field-label">
+                  Палет
+                  <input
+                    v-model.number="sampling.palletCount"
+                    class="field-control"
+                    type="number"
+                    min="1"
+                  />
+                </label>
+                <label class="field-label">
+                  Точек выборки
+                  <input
+                    v-model.number="sampling.sampleCount"
+                    class="field-control"
+                    type="number"
+                    min="1"
+                  />
+                </label>
+                <label class="field-label">
+                  Seed
+                  <input v-model="sampling.seed" class="field-control" />
+                </label>
+                <button class="secondary-button" type="button" @click="generateSampling">
+                  Сгенерировать
+                </button>
+              </div>
+
+              <div v-if="sampling.points.length" class="sample-table">
+                <label v-for="point in sampling.points" :key="point.id" class="sample-row">
+                  <input v-model="point.pallet" class="field-control" />
+                  <input v-model="point.place" class="field-control" />
+                </label>
+              </div>
+            </section>
+
+            <label
+              v-else
+              class="field-label dynamic-field"
+              :class="{ 'dynamic-field--full': field.width === 'full' }"
+            >
+              <span>
+                {{ field.label }}
+                <em v-if="field.required">*</em>
+              </span>
+
+              <input
+                v-if="field.type === 'signature'"
+                class="field-control signature-field"
+                type="text"
+                :value="workerFullName"
+                autocomplete="name"
+                readonly
+              />
+
+              <select
+                v-else-if="field.type === 'select' && getDynamicSelectOptions(field).length"
+                class="field-control"
+                :value="getDynamicFieldValue(field.dataPath)"
+                :required="field.required"
+                @change="setDynamicFieldValue(field.dataPath, getEventValue($event))"
+              >
+                <option value="">
+                  {{ field.placeholder || 'Выберите значение' }}
+                </option>
+                <option
+                  v-for="option in getDynamicSelectOptions(field)"
+                  :key="option.id"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+
+              <textarea
+                v-else-if="field.type === 'textarea'"
+                class="field-control textarea"
+                :value="getDynamicFieldValue(field.dataPath)"
+                :placeholder="field.placeholder"
+                :required="field.required"
+                @input="setDynamicFieldValue(field.dataPath, getEventValue($event))"
+              />
+
+              <input
+                v-else
+                class="field-control"
+                :type="getDynamicInputType(field)"
+                :value="getDynamicFieldValue(field.dataPath)"
+                :placeholder="field.placeholder"
+                :required="field.required"
+                @input="setDynamicFieldValue(field.dataPath, getEventValue($event))"
+              />
+
+              <small v-if="field.helpText" class="dynamic-field__help">
+                {{ field.helpText }}
+              </small>
+            </label>
+          </template>
+
+          <p v-if="!activeTemplateSection.fields.length" class="empty-state dynamic-field--full">
+            В этом разделе макета пока нет полей.
+          </p>
+        </div>
+      </FormSection>
+
+      <FormSection
+        v-if="!selectedDocumentTemplate && activeStepId === 'shipment'"
         title="Партия и инспекция"
-        subtitle="Здесь заполняются данные о заказе, поставщике, транспорте и месте контроля."
       >
         <div class="field-stack two-columns">
           <label class="field-label" for="inspectorName">
@@ -557,7 +1140,7 @@ function buildSamplePlace(random: () => number): string {
       </FormSection>
 
       <FormSection
-        v-if="activeStepId === 'product'"
+        v-if="!selectedDocumentTemplate && activeStepId === 'product'"
         title="Продукт и упаковка"
         subtitle="После данных о партии укажите товар, фасовку, PLU и маркировку."
       >
@@ -565,11 +1148,7 @@ function buildSamplePlace(random: () => number): string {
           <label class="field-label" for="productId">
             Тип товара
             <select id="productId" v-model="productId" class="field-control">
-              <option
-                v-for="product in productOptions"
-                :key="product.id"
-                :value="product.id"
-              >
+              <option v-for="product in productOptions" :key="product.id" :value="product.id">
                 {{ product.label }}
               </option>
             </select>
@@ -611,7 +1190,10 @@ function buildSamplePlace(random: () => number): string {
         </div>
       </FormSection>
 
-      <FormSection v-if="activeStepId === 'temperature'" title="Температура и пломбы">
+      <FormSection
+        v-if="!selectedDocumentTemplate && activeStepId === 'temperature'"
+        title="Температура и пломбы"
+      >
         <div class="field-stack two-columns">
           <label class="field-label">
             Рекомендованная температура
@@ -664,7 +1246,10 @@ function buildSamplePlace(random: () => number): string {
         </div>
       </FormSection>
 
-      <FormSection v-if="activeStepId === 'results'" title="Результаты инспекции">
+      <FormSection
+        v-if="!selectedDocumentTemplate && activeStepId === 'results'"
+        title="Результаты инспекции"
+      >
         <div class="field-stack two-columns">
           <label v-for="field in resultFields" :key="field.key" class="field-label">
             {{ field.label }}
@@ -697,7 +1282,10 @@ function buildSamplePlace(random: () => number): string {
         </div>
       </FormSection>
 
-      <FormSection v-if="activeStepId === 'defects'" title="Описание дефектов">
+      <FormSection
+        v-if="!selectedDocumentTemplate && activeStepId === 'defects'"
+        title="Описание дефектов"
+      >
         <div class="field-stack">
           <label class="field-label">
             Нестандарт для 2 категории
@@ -718,15 +1306,28 @@ function buildSamplePlace(random: () => number): string {
         </div>
       </FormSection>
 
-      <FormSection v-if="activeStepId === 'sampling'" title="Генератор случайных значений">
+      <FormSection
+        v-if="!selectedDocumentTemplate && activeStepId === 'sampling'"
+        title="Генератор случайных значений"
+      >
         <div class="sampling-grid">
           <label class="field-label">
             Палет
-            <input v-model.number="sampling.palletCount" class="field-control" type="number" min="1" />
+            <input
+              v-model.number="sampling.palletCount"
+              class="field-control"
+              type="number"
+              min="1"
+            />
           </label>
           <label class="field-label">
             Точек выборки
-            <input v-model.number="sampling.sampleCount" class="field-control" type="number" min="1" />
+            <input
+              v-model.number="sampling.sampleCount"
+              class="field-control"
+              type="number"
+              min="1"
+            />
           </label>
           <label class="field-label">
             Seed
@@ -746,7 +1347,7 @@ function buildSamplePlace(random: () => number): string {
       </FormSection>
 
       <FormSection
-        v-if="activeStepId === 'photos'"
+        v-if="!selectedDocumentTemplate && activeStepId === 'photos'"
         title="Фотоотчет"
         subtitle="Добавьте снимки в нужные категории документа."
       >
@@ -781,7 +1382,10 @@ function buildSamplePlace(random: () => number): string {
         </div>
       </FormSection>
 
-      <FormSection v-if="activeStepId === 'signatures'" title="Подписи и выпуск">
+      <FormSection
+        v-if="!selectedDocumentTemplate && activeStepId === 'signatures'"
+        title="Подписи и выпуск"
+      >
         <div class="field-stack two-columns">
           <label class="field-label">
             Отчет издан
@@ -818,14 +1422,12 @@ function buildSamplePlace(random: () => number): string {
           type="submit"
           :disabled="!canSave || reportDraftStore.isSaving"
         >
-          {{
-            reportDraftStore.isSaving ? 'Сохраняем локально...' : 'Сохранить и открыть документ'
-          }}
+          {{ reportDraftStore.isSaving ? 'Отправляем...' : 'Отправить отчет администратору' }}
         </button>
       </div>
 
       <p v-if="isLastStep && !canSave" class="form-hint">
-        Минимум для документа: товар, инспектор, номер заказа и место инспекции.
+        Заполните обязательные поля, чтобы отправить отчет администратору.
       </p>
 
       <p v-if="reportDraftStore.errorMessage" class="error-message">
@@ -846,10 +1448,72 @@ function buildSamplePlace(random: () => number): string {
   gap: 16px;
 }
 
+.dynamic-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.dynamic-field--full {
+  grid-column: 1 / -1;
+}
+
+.dynamic-field > span {
+  color: var(--color-text);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.dynamic-field em {
+  color: var(--color-danger);
+  font-style: normal;
+}
+
+.dynamic-field__help {
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.dynamic-special-block {
+  display: grid;
+  gap: 14px;
+}
+
+.dynamic-special-block__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 10px;
+}
+
+.dynamic-special-block__heading h3 {
+  color: var(--color-text);
+  font-size: 0.92rem;
+  font-weight: 900;
+}
+
+.dynamic-special-block__heading p {
+  margin-top: 3px;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+}
+
+.dynamic-special-block__heading > strong {
+  border-radius: 7px;
+  padding: 5px 8px;
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  font-size: 0.66rem;
+  font-weight: 900;
+}
+
 .form-local-strip {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   border: 1px solid rgba(34, 57, 43, 0.16);
   border-radius: 8px;
@@ -1055,19 +1719,33 @@ function buildSamplePlace(random: () => number): string {
 @media (max-width: 760px) {
   .two-columns,
   .sampling-grid,
-  .sample-row {
+  .sample-row,
+  .dynamic-field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dynamic-field--full {
+    grid-column: auto;
   }
 }
 
 @media (max-width: 520px) {
+  .form-local-strip {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .wizard-actions {
     display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
 
   .wizard-actions .primary-button,
   .wizard-actions .secondary-button {
+    min-width: 0;
     width: 100%;
+    padding-inline: 8px;
   }
 }
 </style>

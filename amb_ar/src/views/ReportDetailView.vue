@@ -12,7 +12,15 @@ interface StoredPhotoPreview {
   url: string
   fileName: string
   caption: string
+  templateFieldId?: string
   category: ReportPhotoCategory
+}
+
+interface PhotoDisplayGroup {
+  id: string
+  title: string
+  subtitle: string
+  photos: StoredPhotoPreview[]
 }
 
 const props = defineProps<{
@@ -35,6 +43,33 @@ const photoCategories: Array<{ id: ReportPhotoCategory; title: string; subtitle:
   { id: 'waste', title: 'Waste', subtitle: 'Отход' },
   { id: 'notStandard', title: 'Not correspond to the standard', subtitle: 'Нестандарт' },
 ]
+
+const photoDisplayGroups = computed<PhotoDisplayGroup[]>(() => {
+  const photoFields = (reportDraftStore.selectedReport?.templateSnapshot?.sections ?? []).flatMap(
+    (section) =>
+      [...section.fields]
+        .sort((firstField, secondField) => firstField.sortOrder - secondField.sortOrder)
+        .filter((field) => field.type === 'photo' || field.dataPath === 'photos'),
+  )
+
+  if (photoFields.length) {
+    return photoFields.map((field, fieldIndex) => ({
+      id: field.id,
+      title: field.label,
+      subtitle: field.helpText,
+      photos: photoPreviews.value.filter(
+        (photo) =>
+          photo.templateFieldId === field.id ||
+          (!photo.templateFieldId && fieldIndex === 0),
+      ),
+    }))
+  }
+
+  return photoCategories.map((category) => ({
+    ...category,
+    photos: photoPreviews.value.filter((photo) => photo.category === category.id),
+  }))
+})
 
 const savedAtLabel = computed(() => {
   if (!reportDraftStore.selectedReport) {
@@ -83,8 +118,14 @@ const temperatureRows = computed(() => {
   }
 
   return [
-    ['Storage temperature / Рекомендованная температура', report.temperatureInfo.storageTemperature],
-    ['Of pulp at the time of opening / Пульпа при открытии', report.temperatureInfo.pulpTemperature],
+    [
+      'Storage temperature / Рекомендованная температура',
+      report.temperatureInfo.storageTemperature,
+    ],
+    [
+      'Of pulp at the time of opening / Пульпа при открытии',
+      report.temperatureInfo.pulpTemperature,
+    ],
     ['Temperature violation / Нарушение', report.temperatureInfo.temperatureViolation],
     ['Seal / Пломба', report.temperatureInfo.sealNumber],
     ['Thermographs presence / Наличие термографов', report.temperatureInfo.thermographPresence],
@@ -100,7 +141,10 @@ const resultRows = computed(() => {
   }
 
   return [
-    ['Correspond to the 1st cat. / Соответствует 1 категории', report.inspectionResults.firstCategoryPercent],
+    [
+      'Correspond to the 1st cat. / Соответствует 1 категории',
+      report.inspectionResults.firstCategoryPercent,
+    ],
     [
       'Not correspond to standard for 1st cat. / Нестандарт для 1 категории',
       report.inspectionResults.firstCategoryNonStandardPercent,
@@ -117,7 +161,10 @@ const resultRows = computed(() => {
       'Correspondence of caliber to passport / Соответствие калибра ПК',
       report.inspectionResults.caliberPassportMatch,
     ],
-    ['Not correspond to caliber / Не соответствует калибру', report.inspectionResults.caliberMismatch],
+    [
+      'Not correspond to caliber / Не соответствует калибру',
+      report.inspectionResults.caliberMismatch,
+    ],
     ['Variety / Сорт', report.inspectionResults.variety],
     [
       'Correspondence of variety to passport / Соответствие сорта ПК',
@@ -134,6 +181,7 @@ watch(
       url: URL.createObjectURL(photo.blob),
       fileName: photo.fileName,
       caption: photo.caption,
+      templateFieldId: photo.templateFieldId,
       category: photo.category,
     }))
 
@@ -162,11 +210,9 @@ onUnmounted(() => {
   photoPreviews.value.forEach((photo) => URL.revokeObjectURL(photo.url))
 })
 
-function getPhotosByCategory(category: ReportPhotoCategory): StoredPhotoPreview[] {
-  return photoPreviews.value.filter((photo) => photo.category === category)
-}
-
-function splitSamplePoints(points: ReportSamplePoint[]): [ReportSamplePoint[], ReportSamplePoint[]] {
+function splitSamplePoints(
+  points: ReportSamplePoint[],
+): [ReportSamplePoint[], ReportSamplePoint[]] {
   const midpoint = Math.ceil(points.length / 2)
 
   return [points.slice(0, midpoint), points.slice(midpoint)]
@@ -183,12 +229,23 @@ async function savePdfDocument(): Promise<void> {
     return
   }
 
-  const pdfBlob = await generateQualityReportPdf(report, reportDraftStore.selectedPhotos)
-  const fileName = `${report.mainInfo.orderNumber || report.id}.pdf`
-  const document = await reportDraftStore.saveDocument(report.id, pdfBlob, fileName, 'application/pdf')
+  reportDraftStore.clearError()
 
-  if (document) {
-    downloadBlob(document.blob, document.fileName)
+  try {
+    const pdfBlob = await generateQualityReportPdf(report, reportDraftStore.selectedPhotos)
+    const fileName = `${report.mainInfo.orderNumber || report.id}.pdf`
+    const document = await reportDraftStore.saveDocument(
+      report.id,
+      pdfBlob,
+      fileName,
+      'application/pdf',
+    )
+
+    if (document) {
+      downloadBlob(document.blob, document.fileName)
+    }
+  } catch (error) {
+    reportDraftStore.setError(error)
   }
 }
 
@@ -217,7 +274,6 @@ function displayValue(value: string | number | undefined): string {
 
   return String(value)
 }
-
 </script>
 
 <template>
@@ -227,12 +283,22 @@ function displayValue(value: string | number | undefined): string {
         {{ authStore.isAdmin ? 'Назад к отчетам' : 'Назад к истории' }}
       </RouterLink>
       <div class="detail-toolbar__actions">
-        <button class="secondary-button" type="button" @click="savePdfDocument">
-          Скачать PDF
+        <RouterLink
+          v-if="authStore.isWorker && reportDraftStore.selectedReport?.status === 'draft'"
+          class="secondary-button"
+          :to="{ name: 'edit-report', params: { reportId } }"
+        >
+          Редактировать
+        </RouterLink>
+        <button
+          class="secondary-button"
+          type="button"
+          :disabled="reportDraftStore.isSaving || !reportDraftStore.selectedReport"
+          @click="savePdfDocument"
+        >
+          {{ reportDraftStore.isSaving ? 'Сохраняем PDF...' : 'Скачать PDF' }}
         </button>
-        <button class="primary-button" type="button" @click="printReport">
-          Печать / PDF
-        </button>
+        <button class="primary-button" type="button" @click="printReport">Печать / PDF</button>
       </div>
     </div>
 
@@ -241,11 +307,26 @@ function displayValue(value: string | number | undefined): string {
         <p class="screen-kicker">Документ отчета</p>
         <h1 class="screen-title">{{ reportDraftStore.selectedReport.productName }}</h1>
         <p class="screen-subtitle">
-          Сохранено: {{ savedAtLabel }} · документов:
+          {{
+            reportDraftStore.selectedReport.status === 'draft'
+              ? 'Черновик сохранен'
+              : 'Отправлен администратору'
+          }}: {{ savedAtLabel }} · документов:
           {{ reportDraftStore.selectedDocuments.length }}
         </p>
       </div>
     </section>
+
+    <p v-if="reportDraftStore.errorMessage" class="non-printable error-message">
+      {{ reportDraftStore.errorMessage }}
+    </p>
+
+    <p
+      v-else-if="!reportDraftStore.isLoading && !reportDraftStore.selectedReport"
+      class="non-printable empty-state"
+    >
+      Отчет не найден или у вас нет доступа.
+    </p>
 
     <section v-if="reportDraftStore.selectedReport" class="print-report">
       <article class="document-page">
@@ -265,7 +346,9 @@ function displayValue(value: string | number | undefined): string {
       </article>
 
       <article class="document-page">
-        <h2 class="section-title">Data on temperature and seals / Данные по температуре и пломбам</h2>
+        <h2 class="section-title">
+          Data on temperature and seals / Данные по температуре и пломбам
+        </h2>
         <table class="report-table">
           <tbody>
             <tr v-for="[label, value] in temperatureRows" :key="label">
@@ -275,7 +358,9 @@ function displayValue(value: string | number | undefined): string {
           </tbody>
         </table>
 
-        <h2 class="section-title section-title--spaced">Results of inspection / Результаты инспекции</h2>
+        <h2 class="section-title section-title--spaced">
+          Results of inspection / Результаты инспекции
+        </h2>
         <table class="report-table">
           <tbody>
             <tr v-for="[label, value] in resultRows" :key="label">
@@ -303,15 +388,21 @@ function displayValue(value: string | number | undefined): string {
           </p>
         </div>
 
-        <h2 class="section-title section-title--spaced">Conclusion of Expert / Заключение эксперта</h2>
-        <p class="conclusion">{{ displayValue(reportDraftStore.selectedReport.expertConclusion) }}</p>
+        <h2 class="section-title section-title--spaced">
+          Conclusion of Expert / Заключение эксперта
+        </h2>
+        <p class="conclusion">
+          {{ displayValue(reportDraftStore.selectedReport.expertConclusion) }}
+        </p>
       </article>
 
       <article class="document-page">
         <h2 class="section-title">Random value generator / Генератор случайных значений</h2>
         <div class="sample-grid">
           <table
-            v-for="(sampleColumn, columnIndex) in splitSamplePoints(reportDraftStore.selectedReport.sampling.points)"
+            v-for="(sampleColumn, columnIndex) in splitSamplePoints(
+              reportDraftStore.selectedReport.sampling.points,
+            )"
             :key="columnIndex"
             class="report-table"
           >
@@ -332,17 +423,17 @@ function displayValue(value: string | number | undefined): string {
       </article>
 
       <article
-        v-for="category in photoCategories"
-        :key="category.id"
+        v-for="group in photoDisplayGroups"
+        :key="group.id"
         class="document-page photo-page"
       >
-        <h2 class="section-title">{{ category.title }}</h2>
-        <p class="section-subtitle">{{ category.subtitle }}</p>
-        <figure v-for="photo in getPhotosByCategory(category.id)" :key="photo.id">
+        <h2 class="section-title">{{ group.title }}</h2>
+        <p v-if="group.subtitle" class="section-subtitle">{{ group.subtitle }}</p>
+        <figure v-for="photo in group.photos" :key="photo.id">
           <img :src="photo.url" :alt="photo.fileName" />
           <figcaption>{{ photo.caption || photo.fileName }}</figcaption>
         </figure>
-        <p v-if="!getPhotosByCategory(category.id).length" class="empty-document-block">
+        <p v-if="!group.photos.length" class="empty-document-block">
           Фото не добавлены.
         </p>
       </article>
@@ -373,7 +464,9 @@ function displayValue(value: string | number | undefined): string {
             <tr>
               <th>Retail's representative / Менеджер ОКК ТС</th>
               <td>
-                {{ displayValue(reportDraftStore.selectedReport.signatures.retailRepresentativeName) }}
+                {{
+                  displayValue(reportDraftStore.selectedReport.signatures.retailRepresentativeName)
+                }}
               </td>
             </tr>
           </tbody>

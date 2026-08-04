@@ -4,12 +4,14 @@ import { defineStore } from 'pinia'
 import { PRODUCT_OPTIONS } from '@/shared/constants/products'
 import {
   createReportDraft,
+  createReportDraftFromTemplate,
   getReportDraftDetails,
   listReportDrafts,
   listWorkerReportDrafts,
   saveGeneratedDocument,
   softDeleteReportDraft,
   type CreateReportDraftInput,
+  type SaveReportDraftOptions,
 } from '@/shared/repositories/report-draft-repository'
 import { useAuthStore } from '@/stores/auth.store'
 import type { GeneratedDocument, ProductPhoto, ReportDraft } from '@/types/report'
@@ -24,6 +26,14 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
   const errorMessage = ref<string | null>(null)
 
   const hasReports = computed(() => reports.value.length > 0)
+  const latestWorkerDraft = computed(() =>
+    reports.value
+      .filter((report) => report.status === 'draft')
+      .reduce<ReportDraft | null>(
+        (latest, report) => (!latest || report.updatedAt > latest.updatedAt ? report : latest),
+        null,
+      ),
+  )
 
   async function refreshReports(): Promise<void> {
     const authStore = useAuthStore()
@@ -67,17 +77,29 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     }
   }
 
-  async function createReport(input: CreateReportDraftInput): Promise<ReportDraft | null> {
+  async function createReport(
+    input: CreateReportDraftInput,
+    options: SaveReportDraftOptions = {},
+  ): Promise<ReportDraft | null> {
     isSaving.value = true
     errorMessage.value = null
 
     try {
-      const result = await createReportDraft(input)
+      const authStore = useAuthStore()
+      const result = await createReportDraft(input, {
+        ...options,
+        accountId: authStore.currentAccount?.id,
+      })
 
       selectedReport.value = result.draft
       selectedPhotos.value = result.photos
       selectedDocuments.value = result.documents
-      await refreshReports()
+
+      if (authStore.isWorker) {
+        await refreshWorkerReports()
+      } else {
+        await refreshReports()
+      }
 
       return result.draft
     } catch (error) {
@@ -89,12 +111,48 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     }
   }
 
-  async function loadReport(reportId: string): Promise<void> {
-    isLoading.value = true
+  async function startReportFromTemplate(templateId: string): Promise<ReportDraft | null> {
+    const authStore = useAuthStore()
+
+    if (!authStore.currentAccount || !authStore.isWorker) {
+      errorMessage.value = 'Нужно войти под аккаунтом инспектора'
+      return null
+    }
+
+    isSaving.value = true
     errorMessage.value = null
 
     try {
-      const details = await getReportDraftDetails(reportId)
+      const result = await createReportDraftFromTemplate(
+        templateId,
+        authStore.currentAccount.id,
+        authStore.currentAccount.fullName,
+      )
+
+      selectedReport.value = result.draft
+      selectedPhotos.value = result.photos
+      selectedDocuments.value = result.documents
+      await refreshWorkerReports()
+
+      return result.draft
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
+      return null
+    } finally {
+      isSaving.value = false
+    }
+  }
+
+  async function loadReport(reportId: string): Promise<void> {
+    isLoading.value = true
+    errorMessage.value = null
+    selectedReport.value = null
+    selectedPhotos.value = []
+    selectedDocuments.value = []
+
+    try {
+      const accountId = useAuthStore().currentAccount?.id
+      const details = accountId ? await getReportDraftDetails(reportId, accountId) : null
 
       selectedReport.value = details?.draft ?? null
       selectedPhotos.value = details?.photos ?? []
@@ -106,16 +164,40 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     }
   }
 
-  async function deleteReport(reportId: string): Promise<void> {
-    await softDeleteReportDraft(reportId)
+  async function deleteReport(reportId: string): Promise<boolean> {
+    const authStore = useAuthStore()
 
-    if (selectedReport.value?.id === reportId) {
-      selectedReport.value = null
-      selectedPhotos.value = []
-      selectedDocuments.value = []
+    if (!authStore.currentAccount?.id) {
+      errorMessage.value = 'Нужно войти в систему'
+      return false
     }
 
-    await refreshReports()
+    isSaving.value = true
+    errorMessage.value = null
+
+    try {
+      await softDeleteReportDraft(reportId, authStore.currentAccount.id)
+
+      if (selectedReport.value?.id === reportId) {
+        selectedReport.value = null
+        selectedPhotos.value = []
+        selectedDocuments.value = []
+      }
+
+      if (authStore.isWorker) {
+        await refreshWorkerReports()
+      } else {
+        await refreshReports()
+      }
+
+      return true
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
+
+      return false
+    } finally {
+      isSaving.value = false
+    }
   }
 
   async function saveDocument(
@@ -128,10 +210,28 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     errorMessage.value = null
 
     try {
-      const document = await saveGeneratedDocument(reportId, documentBlob, fileName, mimeType)
+      const accountId = useAuthStore().currentAccount?.id
+
+      if (!accountId) {
+        throw new Error('Нужно войти в систему')
+      }
+
+      const document = await saveGeneratedDocument(
+        reportId,
+        documentBlob,
+        fileName,
+        mimeType,
+        accountId,
+      )
 
       selectedDocuments.value = [...selectedDocuments.value, document]
       await loadReport(reportId)
+
+      if (useAuthStore().isWorker) {
+        await refreshWorkerReports()
+      } else {
+        await refreshReports()
+      }
 
       return document
     } catch (error) {
@@ -141,6 +241,14 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     } finally {
       isSaving.value = false
     }
+  }
+
+  function setError(error: unknown): void {
+    errorMessage.value = getErrorMessage(error)
+  }
+
+  function clearError(): void {
+    errorMessage.value = null
   }
 
   return {
@@ -153,17 +261,21 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     isSaving,
     errorMessage,
     hasReports,
+    latestWorkerDraft,
     refreshReports,
     refreshWorkerReports,
     loadHome,
     loadWorkerHistory,
     createReport,
+    startReportFromTemplate,
     loadReport,
     deleteReport,
     saveDocument,
+    setError,
+    clearError,
   }
 })
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Не удалось сохранить локальные данные'
+  return error instanceof Error ? error.message : 'Не удалось сохранить данные'
 }

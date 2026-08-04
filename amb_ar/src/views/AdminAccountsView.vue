@@ -46,6 +46,15 @@ async function saveAccount(): Promise<void> {
 }
 
 async function deleteAccount(accountId: string): Promise<void> {
+  const account = accountAdminStore.accounts.find((item) => item.id === accountId)
+  const shouldDelete = window.confirm(
+    `Отключить аккаунт «${account?.fullName ?? accountId}» на этой рабочей станции?`,
+  )
+
+  if (!shouldDelete) {
+    return
+  }
+
   await accountAdminStore.deleteAccount(accountId)
 
   if (editingAccountId.value === accountId) {
@@ -61,7 +70,7 @@ async function deleteAccount(accountId: string): Promise<void> {
         <p class="screen-kicker">Администратор</p>
         <h1 class="screen-title">Аккаунты</h1>
         <p class="screen-subtitle">
-          Аккаунты хранятся в серверной БД. Работники входят по уникальному номеру.
+          Управляйте доступом сотрудников по уникальным номерам и назначайте рабочие роли.
         </p>
       </div>
     </section>
@@ -99,7 +108,7 @@ async function deleteAccount(accountId: string): Promise<void> {
       <section class="account-list app-card">
         <div class="account-list__header">
           <div>
-            <p class="screen-kicker">Серверная БД</p>
+            <p class="screen-kicker">Реестр сотрудников</p>
             <h2>Список аккаунтов</h2>
           </div>
           <span>{{ accountAdminStore.accounts.length }}</span>

@@ -1,12 +1,23 @@
-import { getProductLabel } from '@/shared/constants/products'
 import {
-  fetchServerReports,
-  fetchServerWorkerReports,
-  uploadServerReport,
+  apiDelete,
+  apiGet,
+  apiPost,
+  apiPut,
+  deserializeDocument,
+  deserializePhoto,
+  serializeDocument,
+  serializePhoto,
+  type SerializedGeneratedDocument,
+  type ServerReportDetails,
 } from '@/shared/api/server-api'
-import { appDb } from '@/shared/db/app-db'
+import { getProductLabel } from '@/shared/constants/products'
+import { photoCompressionService } from '@/shared/photos/photo-compression-service'
+import {
+  ensureSeedDocumentTemplates,
+  getActiveDocumentTemplate,
+  getDocumentTemplateById,
+} from '@/shared/repositories/document-template-repository'
 import { createEntityId, createSyncMetadata } from '@/shared/sync/sync-metadata'
-import { createSyncQueueItem, scheduleRetry } from '@/shared/sync/sync-queue'
 import type {
   GeneratedDocument,
   ProductPhoto,
@@ -20,16 +31,17 @@ import type {
   ReportTemperatureInfo,
 } from '@/types/report'
 
-export const QUALITY_REPORT_TEMPLATE_VERSION = 'quality-inspection-v1'
-
 export interface CreateReportPhotoInput {
+  id?: string
   file: File
+  templateFieldId?: string
   category: ReportPhotoCategory
   caption: string
   sortOrder: number
 }
 
 export interface CreateReportDraftInput {
+  templateId?: string
   workerAccountId: string
   productId: string
   inspectorName: string
@@ -38,9 +50,16 @@ export interface CreateReportDraftInput {
   inspectionResults: ReportInspectionResults
   descriptions: ReportDescriptions
   expertConclusion: string
+  customFieldValues?: Record<string, string>
   sampling: ReportSampling
   signatures: ReportSignatures
   photos: CreateReportPhotoInput[]
+}
+
+export interface SaveReportDraftOptions {
+  draftId?: string
+  status?: ReportDraft['status']
+  accountId?: string
 }
 
 export interface ReportDraftDetails {
@@ -49,29 +68,145 @@ export interface ReportDraftDetails {
   documents: GeneratedDocument[]
 }
 
+const DEFAULT_REPORT_PRODUCT_ID = 'sweet-red-pepper'
+
+export async function createReportDraftFromTemplate(
+  templateId: string,
+  workerAccountId: string,
+  inspectorName: string,
+): Promise<ReportDraftDetails> {
+  const productName = getProductLabel(DEFAULT_REPORT_PRODUCT_ID)
+
+  return createReportDraft(
+    {
+      templateId,
+      workerAccountId,
+      productId: DEFAULT_REPORT_PRODUCT_ID,
+      inspectorName,
+      mainInfo: {
+        orderNumber: '',
+        zost: '',
+        shipper: '',
+        trailerNumber: '',
+        placeOfSurvey: '',
+        productName,
+        packageName: '1 кг',
+        plu: '',
+        openingDate: '',
+        surveyDate: '',
+        packingKind: '',
+        boxMarking: '',
+      },
+      temperatureInfo: {
+        storageTemperature: '',
+        pulpTemperature: '',
+        temperatureViolation: 'Нет',
+        sealNumber: '',
+        thermographPresence: 'Нет',
+        thermographViolation: 'Нет',
+      },
+      inspectionResults: {
+        firstCategoryPercent: '',
+        firstCategoryNonStandardPercent: '',
+        secondCategoryNonStandardPercent: '',
+        wastePercent: '',
+        density: '',
+        brix: '',
+        caliber: '',
+        caliberPassportMatch: 'Да',
+        caliberMismatch: '',
+        variety: '',
+        varietyPassportMatch: 'Да',
+      },
+      descriptions: {
+        secondClassDefects: '',
+        waste: '',
+        caliberMismatch: '',
+      },
+      expertConclusion: '',
+      customFieldValues: {},
+      sampling: {
+        palletCount: 26,
+        sampleCount: 15,
+        seed: `${Date.now()}`,
+        points: [],
+      },
+      signatures: {
+        reportIssuedDate: '',
+        expertName: '',
+        retailRepresentativeName: '',
+      },
+      photos: [],
+    },
+    { status: 'draft', accountId: workerAccountId },
+  )
+}
+
 export async function createReportDraft(
   input: CreateReportDraftInput,
+  options: SaveReportDraftOptions = {},
 ): Promise<ReportDraftDetails> {
   const now = Date.now()
-  const draftId = createEntityId('report')
+  const draftId = options.draftId ?? createEntityId('report')
+  const accountId = options.accountId ?? input.workerAccountId
+  const existingDetails = options.draftId
+    ? await getReportDraftDetails(options.draftId, accountId)
+    : null
+  const existingDraft = existingDetails?.draft
+
+  await ensureSeedDocumentTemplates()
+
+  const requestedTemplate = input.templateId
+    ? await getDocumentTemplateById(input.templateId)
+    : null
+  const selectedTemplate =
+    requestedTemplate?.status === 'active'
+      ? requestedTemplate
+      : existingDraft
+        ? null
+        : await getActiveDocumentTemplate()
+  const existingPhotosById = new Map(
+    (existingDetails?.photos ?? []).map((photo) => [photo.id, photo]),
+  )
   const productName = input.mainInfo.productName.trim() || getProductLabel(input.productId)
-  const photos = input.photos.map<ProductPhoto>((photoInput) => ({
-    id: createEntityId('photo'),
-    draftId,
-    category: photoInput.category,
-    fileName: photoInput.file.name || 'quality-report-photo.jpg',
-    mimeType: photoInput.file.type || 'application/octet-stream',
-    size: photoInput.file.size,
-    blob: photoInput.file,
-    caption: photoInput.caption.trim(),
-    sortOrder: photoInput.sortOrder,
-    createdAt: now,
-    ...createSyncMetadata('synced'),
-  }))
+  const photos = await Promise.all(
+    input.photos.map<Promise<ProductPhoto>>(async (photoInput) => {
+      const existingPhoto = existingPhotosById.get(photoInput.id ?? '')
+      const compressedPhoto = existingPhoto
+        ? {
+            blob: existingPhoto.blob,
+            mimeType: existingPhoto.mimeType,
+            size: existingPhoto.size,
+          }
+        : await photoCompressionService.compress(photoInput.file)
+
+      return {
+        id: photoInput.id ?? createEntityId('photo'),
+        draftId,
+        ...(photoInput.templateFieldId ? { templateFieldId: photoInput.templateFieldId } : {}),
+        category: photoInput.category,
+        fileName: photoInput.file.name || 'quality-report-photo.jpg',
+        mimeType: compressedPhoto.mimeType,
+        size: compressedPhoto.size,
+        blob: compressedPhoto.blob,
+        caption: photoInput.caption.trim(),
+        sortOrder: photoInput.sortOrder,
+        createdAt: existingPhoto?.createdAt ?? now,
+        ...createSyncMetadata('synced'),
+      }
+    }),
+  )
   const draft: ReportDraft = {
     id: draftId,
-    status: 'ready',
-    templateVersion: QUALITY_REPORT_TEMPLATE_VERSION,
+    status: options.status ?? 'draft',
+    templateId: selectedTemplate?.id ?? existingDraft?.templateId,
+    templateSnapshot: selectedTemplate
+      ? {
+          templateId: selectedTemplate.id,
+          name: selectedTemplate.name,
+          sections: structuredClone(selectedTemplate.sections),
+        }
+      : existingDraft?.templateSnapshot,
     workerAccountId: input.workerAccountId,
     productId: input.productId,
     productName,
@@ -84,111 +219,58 @@ export async function createReportDraft(
     inspectionResults: input.inspectionResults,
     descriptions: input.descriptions,
     expertConclusion: input.expertConclusion.trim(),
+    customFieldValues: { ...input.customFieldValues },
     sampling: input.sampling,
     signatures: input.signatures,
     photoIds: photos.map((photo) => photo.id),
-    createdAt: now,
+    createdAt: existingDraft?.createdAt ?? now,
     updatedAt: now,
     ...createSyncMetadata('synced'),
   }
-  const syncQueueItem = createSyncQueueItem('reportDraft', draft.id, 'upsert', { draft })
-
-  await appDb.transaction(
-    'rw',
-    appDb.reportDrafts,
-    appDb.productPhotos,
-    appDb.syncQueue,
-    async () => {
-      await appDb.reportDrafts.put(draft)
-      await appDb.syncQueue.put(syncQueueItem)
-
-      if (photos.length) {
-        await appDb.productPhotos.bulkPut(photos)
-      }
+  const serverDetails = await apiPut<ServerReportDetails>(
+    `/api/reports/${encodeURIComponent(draftId)}`,
+    {
+      draft,
+      photos: await Promise.all(photos.map(serializePhoto)),
     },
+    accountId,
   )
 
-  void syncReportDraftToServer(draft)
-
-  return {
-    draft,
-    photos,
-    documents: [],
-  }
+  return deserializeDetails(serverDetails)
 }
 
 export async function listReportDrafts(adminAccountId?: string): Promise<ReportDraft[]> {
-  if (adminAccountId) {
-    try {
-      const serverReports = await fetchServerReports(adminAccountId)
-
-      if (serverReports.length) {
-        await appDb.reportDrafts.bulkPut(serverReports)
-
-        return serverReports
-          .filter((draft) => draft._deletedAt === undefined && hasVisibleReportContent(draft))
-          .sort((firstDraft, secondDraft) => secondDraft.updatedAt - firstDraft.updatedAt)
-      }
-    } catch {
-      // Fall through to local cache when the server is offline.
-    }
+  if (!adminAccountId) {
+    return []
   }
 
-  return appDb.reportDrafts
-    .orderBy('updatedAt')
-    .reverse()
-    .filter((draft) => draft._deletedAt === undefined && hasVisibleReportContent(draft))
-    .toArray()
+  const reports = await apiGet<ReportDraft[]>('/api/reports', adminAccountId)
+  return reports.filter(hasVisibleReportContent)
 }
 
 export async function listWorkerReportDrafts(workerAccountId: string): Promise<ReportDraft[]> {
+  const reports = await apiGet<ReportDraft[]>('/api/reports/mine', workerAccountId)
+  return reports.filter(hasVisibleReportContent)
+}
+
+export async function getReportDraftDetails(
+  draftId: string,
+  accountId: string,
+): Promise<ReportDraftDetails | null> {
   try {
-    const serverReports = await fetchServerWorkerReports(workerAccountId)
+    const details = await apiGet<ServerReportDetails>(
+      `/api/reports/${encodeURIComponent(draftId)}`,
+      accountId,
+    )
 
-    if (serverReports.length) {
-      await appDb.reportDrafts.bulkPut(serverReports)
+    return deserializeDetails(details)
+  } catch (error) {
+    if (isNotFound(error)) {
+      return null
     }
-  } catch {
-    // Fall through to the local cache when the server is offline.
+
+    throw error
   }
-
-  const reports = await appDb.reportDrafts
-    .where('workerAccountId')
-    .equals(workerAccountId)
-    .filter((draft) => draft._deletedAt === undefined && hasVisibleReportContent(draft))
-    .toArray()
-
-  return reports.sort((firstDraft, secondDraft) => secondDraft.updatedAt - firstDraft.updatedAt)
-}
-
-export async function getReportDraftDetails(draftId: string): Promise<ReportDraftDetails | null> {
-  const draft = await appDb.reportDrafts.get(draftId)
-
-  if (!draft || draft._deletedAt !== undefined) {
-    return null
-  }
-
-  return {
-    draft,
-    photos: await getPhotosForDraft(draft.id),
-    documents: await getGeneratedDocumentsForDraft(draft.id),
-  }
-}
-
-export async function getPhotosForDraft(draftId: string): Promise<ProductPhoto[]> {
-  return appDb.productPhotos
-    .where('draftId')
-    .equals(draftId)
-    .filter((photo) => photo._deletedAt === undefined)
-    .sortBy('sortOrder')
-}
-
-export async function getGeneratedDocumentsForDraft(draftId: string): Promise<GeneratedDocument[]> {
-  return appDb.generatedDocuments
-    .where('draftId')
-    .equals(draftId)
-    .filter((document) => document._deletedAt === undefined)
-    .sortBy('generatedAt')
 }
 
 export async function saveGeneratedDocument(
@@ -196,18 +278,12 @@ export async function saveGeneratedDocument(
   documentBlob: Blob,
   fileName: string,
   mimeType: string,
+  accountId: string,
 ): Promise<GeneratedDocument> {
-  const draft = await appDb.reportDrafts.get(draftId)
-
-  if (!draft) {
-    throw new Error('Report draft was not found')
-  }
-
   const generatedAt = Date.now()
   const document: GeneratedDocument = {
     id: createEntityId('document'),
     draftId,
-    templateVersion: draft.templateVersion,
     fileName,
     mimeType,
     blob: documentBlob,
@@ -215,71 +291,34 @@ export async function saveGeneratedDocument(
     contentHash: await createBlobHash(documentBlob),
     ...createSyncMetadata('synced'),
   }
-  const updatedDraft: ReportDraft = {
-    ...draft,
-    status: 'exported',
-    updatedAt: generatedAt,
-    ...createSyncMetadata('synced'),
-  }
-
-  await appDb.transaction(
-    'rw',
-    appDb.reportDrafts,
-    appDb.generatedDocuments,
-    async () => {
-      await appDb.reportDrafts.put(updatedDraft)
-      await appDb.generatedDocuments.put(document)
-    },
+  const savedDocument = await apiPost<SerializedGeneratedDocument>(
+    `/api/reports/${encodeURIComponent(draftId)}/documents`,
+    await serializeDocument(document),
+    accountId,
   )
 
-  return document
+  return deserializeDocument(savedDocument)
 }
 
-export async function softDeleteReportDraft(draftId: string): Promise<void> {
-  await appDb.transaction(
-    'rw',
-    appDb.reportDrafts,
-    appDb.productPhotos,
-    appDb.generatedDocuments,
-    async () => {
-      const draft = await appDb.reportDrafts.get(draftId)
-
-      if (!draft) {
-        return
-      }
-
-      const deletedAt = Date.now()
-      const deletedDraft: ReportDraft = {
-        ...draft,
-        status: 'archived',
-        _deletedAt: deletedAt,
-        updatedAt: deletedAt,
-        ...createSyncMetadata('synced'),
-      }
-      const photos = await appDb.productPhotos.where('draftId').equals(draftId).toArray()
-      const documents = await appDb.generatedDocuments.where('draftId').equals(draftId).toArray()
-      const deletedPhotos = photos.map<ProductPhoto>((photo) => ({
-        ...photo,
-        _deletedAt: deletedAt,
-        ...createSyncMetadata('synced'),
-      }))
-      const deletedDocuments = documents.map<GeneratedDocument>((document) => ({
-        ...document,
-        _deletedAt: deletedAt,
-        ...createSyncMetadata('synced'),
-      }))
-
-      await appDb.reportDrafts.put(deletedDraft)
-      await appDb.productPhotos.bulkPut(deletedPhotos)
-      await appDb.generatedDocuments.bulkPut(deletedDocuments)
-    },
-  )
+export async function softDeleteReportDraft(
+  draftId: string,
+  accountId: string,
+): Promise<void> {
+  await apiDelete(`/api/reports/${encodeURIComponent(draftId)}`, accountId)
 }
 
 async function createBlobHash(blob: Blob): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
 
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+function deserializeDetails(details: ServerReportDetails): ReportDraftDetails {
+  return {
+    draft: details.draft,
+    photos: details.photos.map(deserializePhoto),
+    documents: details.documents.map(deserializeDocument),
+  }
 }
 
 function hasVisibleReportContent(draft: ReportDraft): boolean {
@@ -291,21 +330,34 @@ function hasVisibleReportContent(draft: ReportDraft): boolean {
   )
 }
 
-async function syncReportDraftToServer(draft: ReportDraft): Promise<void> {
-  try {
-    await uploadServerReport(draft)
-    await appDb.syncQueue.delete(`reportDraft:${draft.id}:upsert`)
-  } catch (error) {
-    const queueItem = await appDb.syncQueue.get(`reportDraft:${draft.id}:upsert`)
+function isNotFound(error: unknown): boolean {
+  return error instanceof Error && /не найден|404/i.test(error.message)
+}
 
-    if (!queueItem) {
-      return
-    }
+export class ReportRepository {
+  createFromTemplate(templateId: string, workerAccountId: string, inspectorName: string) {
+    return createReportDraftFromTemplate(templateId, workerAccountId, inspectorName)
+  }
 
-    await appDb.syncQueue.put(scheduleRetry(queueItem, getErrorMessage(error)))
+  create(input: CreateReportDraftInput, options: SaveReportDraftOptions = {}) {
+    return createReportDraft(input, options)
+  }
+
+  listAll(adminAccountId?: string) {
+    return listReportDrafts(adminAccountId)
+  }
+
+  listForWorker(workerAccountId: string) {
+    return listWorkerReportDrafts(workerAccountId)
+  }
+
+  getDetails(reportId: string, accountId: string) {
+    return getReportDraftDetails(reportId, accountId)
+  }
+
+  softDelete(reportId: string, accountId: string) {
+    return softDeleteReportDraft(reportId, accountId)
   }
 }
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Не удалось отправить отчет на сервер'
-}
+export const reportRepository = new ReportRepository()

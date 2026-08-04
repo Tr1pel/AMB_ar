@@ -1,14 +1,5 @@
 export type SyncStatus = 'synced' | 'pending' | 'conflicted'
 
-export type SyncOperation = 'upsert' | 'delete'
-
-export type SyncEntityType =
-  | 'reportDraft'
-  | 'productPhoto'
-  | 'generatedDocument'
-  | 'account'
-  | 'reportTemplateOption'
-
 export type AccountRole = 'admin' | 'worker'
 
 export type ReportStatus = 'draft' | 'ready' | 'exported' | 'archived'
@@ -67,6 +58,63 @@ export interface ReportTemplateOption extends SyncableEntity {
   sortOrder: number
   createdAt: number
   updatedAt: number
+}
+
+export type DocumentTemplateStatus = 'draft' | 'active' | 'archived'
+
+export type DocumentTemplateFieldType =
+  | 'text'
+  | 'number'
+  | 'date'
+  | 'select'
+  | 'textarea'
+  | 'photo'
+  | 'signature'
+
+export type DocumentTemplateFieldWidth = 'half' | 'full'
+
+export interface DocumentTemplateFieldOption {
+  id: string
+  label: string
+  sortOrder: number
+}
+
+export interface DocumentTemplateField {
+  id: string
+  dataPath: string
+  label: string
+  type: DocumentTemplateFieldType
+  required: boolean
+  placeholder: string
+  helpText: string
+  width: DocumentTemplateFieldWidth
+  sortOrder: number
+  options: DocumentTemplateFieldOption[]
+}
+
+export interface DocumentTemplateSection {
+  id: string
+  title: string
+  description: string
+  sortOrder: number
+  fields: DocumentTemplateField[]
+}
+
+export interface DocumentTemplate extends SyncableEntity {
+  name: string
+  description: string
+  status: DocumentTemplateStatus
+  sections: DocumentTemplateSection[]
+  createdByAccountId: string
+  createdAt: number
+  updatedAt: number
+  publishedAt?: number
+}
+
+export interface DocumentTemplateSnapshot {
+  templateId: string
+  name: string
+  sections: DocumentTemplateSection[]
 }
 
 export interface ReportMainInfo {
@@ -134,7 +182,8 @@ export interface ReportSignatures {
 
 export interface ReportDraft extends SyncableEntity {
   status: ReportStatus
-  templateVersion: string
+  templateId?: string
+  templateSnapshot?: DocumentTemplateSnapshot
   workerAccountId: string
   productId: string
   productName: string
@@ -144,6 +193,7 @@ export interface ReportDraft extends SyncableEntity {
   inspectionResults: ReportInspectionResults
   descriptions: ReportDescriptions
   expertConclusion: string
+  customFieldValues?: Record<string, string>
   sampling: ReportSampling
   signatures: ReportSignatures
   photoIds: string[]
@@ -153,6 +203,7 @@ export interface ReportDraft extends SyncableEntity {
 
 export interface ProductPhoto extends SyncableEntity {
   draftId: string
+  templateFieldId?: string
   category: ReportPhotoCategory
   fileName: string
   mimeType: string
@@ -165,21 +216,9 @@ export interface ProductPhoto extends SyncableEntity {
 
 export interface GeneratedDocument extends SyncableEntity {
   draftId: string
-  templateVersion: string
   fileName: string
   mimeType: string
   blob: Blob
   generatedAt: number
   contentHash: string
-}
-
-export interface SyncQueueItem extends SyncableEntity {
-  entityType: SyncEntityType
-  entityId: string
-  operation: SyncOperation
-  payload: Record<string, unknown>
-  retryCount: number
-  nextAttemptAt: number
-  createdAt: number
-  lastError?: string
 }

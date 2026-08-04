@@ -37,3 +37,8 @@ __screenshots__/
 
 # Vite
 *.timestamp-*-*.mjs
+
+# Server database
+server/*.sqlite
+server/*.sqlite-shm
+server/*.sqlite-wal

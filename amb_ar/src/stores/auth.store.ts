@@ -5,6 +5,7 @@ import {
   ensureSeedAccounts,
   findAccountByLoginNumber,
   getAccount,
+  getDemoAccount,
 } from '@/shared/repositories/account-repository'
 import type { Account, AccountRole } from '@/types/report'
 
@@ -63,9 +64,32 @@ export const useAuthStore = defineStore('auth', () => {
         return null
       }
 
-      currentAccount.value = account
-      localStorage.setItem(CURRENT_ACCOUNT_STORAGE_KEY, account.id)
-      isInitialized.value = true
+      setCurrentAccount(account)
+
+      return account
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
+
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function signInAsRole(role: AccountRole): Promise<Account | null> {
+    isLoading.value = true
+    errorMessage.value = null
+
+    try {
+      const account = await getDemoAccount(role)
+
+      if (!account) {
+        errorMessage.value = 'Демо-аккаунт не найден'
+
+        return null
+      }
+
+      setCurrentAccount(account)
 
       return account
     } catch (error) {
@@ -94,7 +118,14 @@ export const useAuthStore = defineStore('auth', () => {
     isWorker,
     initialize,
     signIn,
+    signInAsRole,
     signOut,
+  }
+
+  function setCurrentAccount(account: Account): void {
+    currentAccount.value = account
+    localStorage.setItem(CURRENT_ACCOUNT_STORAGE_KEY, account.id)
+    isInitialized.value = true
   }
 })
 

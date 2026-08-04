@@ -1,33 +1,42 @@
 :root {
-  --color-background: #eef3f0;
+  --color-background: #edf1ec;
   --color-surface: #ffffff;
-  --color-surface-muted: #f6f8f6;
-  --color-surface-raised: #fbfcfb;
-  --color-border: #d9e2dc;
-  --color-border-strong: #b9c8bf;
-  --color-text: #17211b;
+  --color-surface-muted: #f5f7f4;
+  --color-surface-raised: #fbfcfa;
+  --color-border: #d8e0d9;
+  --color-border-strong: #b9c7bd;
+  --color-text: #18231e;
   --color-text-muted: #66736c;
-  --color-primary: #22392b;
-  --color-primary-dark: #16271d;
-  --color-primary-soft: #e7eee9;
-  --color-accent: #b86f1c;
+  --color-primary: #12372a;
+  --color-primary-dark: #09271c;
+  --color-primary-soft: #e4eee7;
+  --color-accent: #c67a24;
+  --color-accent-dark: #8d5010;
   --color-accent-soft: #fff2df;
-  --color-info: #2563eb;
+  --color-info: #2b5fae;
   --color-info-soft: #eaf1ff;
   --color-danger: #b42318;
   --color-danger-soft: #fff0ee;
-  --color-success: #247447;
+  --color-success: #287346;
   --color-success-soft: #e8f5ed;
-  --color-shadow: rgba(25, 38, 31, 0.1);
+  --color-shadow: rgba(18, 55, 42, 0.09);
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
 
   font-family:
     Inter,
-    -apple-system,
-    BlinkMacSystemFont,
     'Segoe UI',
     Roboto,
+    Helvetica,
     Arial,
     sans-serif;
+  color: var(--color-text);
+  background: var(--color-background);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 *,
@@ -35,19 +44,23 @@
 *::after {
   box-sizing: border-box;
   margin: 0;
-  font-weight: normal;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--color-background);
 }
 
 body {
+  min-width: 320px;
   min-height: 100vh;
-  color: var(--color-text);
   background:
-    linear-gradient(180deg, #dce7df 0%, #eef3f0 36%, #f7f9f7 100%);
-  line-height: 1.5;
+    radial-gradient(circle at 82% 0%, rgba(117, 167, 133, 0.11), transparent 28rem),
+    var(--color-background);
+  color: var(--color-text);
   font-size: 16px;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
 }
 
 button,
@@ -62,8 +75,11 @@ button {
   cursor: pointer;
 }
 
-button:disabled {
+button:disabled,
+input:disabled,
+select:disabled {
   cursor: not-allowed;
+  opacity: 0.58;
 }
 
 a,
@@ -74,4 +90,14 @@ button {
 img {
   display: block;
   max-width: 100%;
+}
+
+::selection {
+  background: #bcd4c3;
+  color: var(--color-primary-dark);
+}
+
+:focus-visible {
+  outline: 3px solid rgba(198, 122, 36, 0.3);
+  outline-offset: 2px;
 }

@@ -3,17 +3,15 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { generateQualityReportPdf } from '@/shared/documents/quality-report-pdf'
-import {
-  getReportDraftDetails,
-  saveGeneratedDocument,
-} from '@/shared/repositories/report-draft-repository'
+import { getReportDraftDetails } from '@/shared/repositories/report-draft-repository'
 import { useAuthStore } from '@/stores/auth.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
-import type { ReportDraft } from '@/types/report'
+import type { ReportDraft, ReportStatus } from '@/types/report'
 
-const authStore = useAuthStore()
 const reportDraftStore = useReportDraftStore()
+const authStore = useAuthStore()
 const searchQuery = ref('')
+const activeActionReportId = ref<string | null>(null)
 
 const filteredReports = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
@@ -21,6 +19,7 @@ const filteredReports = computed(() => {
   return reportDraftStore.reports.filter((report) => {
     const searchValue = [
       report.productName,
+      report.inspectorName,
       report.mainInfo?.orderNumber,
       report.mainInfo?.placeOfSurvey,
     ]
@@ -32,7 +31,7 @@ const filteredReports = computed(() => {
 })
 
 const readyReportCount = computed(
-  () => reportDraftStore.reports.filter((report) => report.status === 'ready').length,
+  () => reportDraftStore.reports.filter((report) => report.status !== 'draft').length,
 )
 
 onMounted(() => {
@@ -43,36 +42,85 @@ function formatReportTime(timestamp: number): string {
   return new Intl.DateTimeFormat('ru-RU', {
     day: '2-digit',
     month: '2-digit',
+    year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
   }).format(timestamp)
 }
 
-function getReportPlace(report: ReportDraft): string {
-  return report.mainInfo?.placeOfSurvey || 'Место не указано'
-}
-
 function getReportOrder(report: ReportDraft): string {
-  return report.mainInfo?.orderNumber ? `Заказ ${report.mainInfo.orderNumber}` : 'Без номера'
+  return report.mainInfo?.orderNumber || 'Не указан'
 }
 
 function getReportPhotoCount(report: ReportDraft): number {
   return report.photoIds?.length ?? 0
 }
 
-async function downloadReportPdf(report: ReportDraft): Promise<void> {
-  const details = await getReportDraftDetails(report.id)
+function getStatusLabel(status: ReportStatus): string {
+  const labels: Record<ReportStatus, string> = {
+    draft: 'Черновик',
+    ready: 'Отправлен',
+    exported: 'Отправлен · PDF',
+    archived: 'Удален',
+  }
 
-  if (!details) {
+  return labels[status]
+}
+
+async function downloadReportPdf(report: ReportDraft): Promise<void> {
+  activeActionReportId.value = report.id
+  reportDraftStore.clearError()
+
+  try {
+    const accountId = authStore.currentAccount?.id
+
+    if (!accountId) {
+      return
+    }
+
+    const details = await getReportDraftDetails(report.id, accountId)
+
+    if (!details) {
+      throw new Error('Отчет не найден на сервере')
+    }
+
+    const pdfBlob = await generateQualityReportPdf(details.draft, details.photos)
+    const fileName = `${details.draft.mainInfo.orderNumber || details.draft.id}.pdf`
+    const document = await reportDraftStore.saveDocument(
+      details.draft.id,
+      pdfBlob,
+      fileName,
+      'application/pdf',
+    )
+
+    if (!document) {
+      return
+    }
+
+    downloadBlob(document.blob, document.fileName)
+  } catch (error) {
+    reportDraftStore.setError(error)
+  } finally {
+    activeActionReportId.value = null
+  }
+}
+
+async function deleteReport(report: ReportDraft): Promise<void> {
+  const shouldDelete = window.confirm(
+    `Удалить отчет «${report.productName || 'Без названия'}» из истории?`,
+  )
+
+  if (!shouldDelete) {
     return
   }
 
-  const pdfBlob = await generateQualityReportPdf(details.draft, details.photos)
-  const fileName = `${details.draft.mainInfo.orderNumber || details.draft.id}.pdf`
-  const document = await saveGeneratedDocument(details.draft.id, pdfBlob, fileName, 'application/pdf')
+  activeActionReportId.value = report.id
 
-  downloadBlob(document.blob, document.fileName)
-  await reportDraftStore.refreshWorkerReports()
+  try {
+    await reportDraftStore.deleteReport(report.id)
+  } finally {
+    activeActionReportId.value = null
+  }
 }
 
 function downloadBlob(blob: Blob, fileName: string): void {
@@ -89,35 +137,43 @@ function downloadBlob(blob: Blob, fileName: string): void {
 <template>
   <main class="screen-page worker-reports-page">
     <section class="worker-hero">
-      <div class="worker-hero__topline">
-        <p class="screen-kicker">Мои отчеты</p>
-        <span>{{ authStore.currentAccount?.fullName }}</span>
-      </div>
+      <div class="worker-hero__content">
+        <div>
+          <h1>Контроль качества</h1>
+        </div>
 
-      <h1>История отчетов</h1>
-      <p>Все отчеты, созданные под вашим аккаунтом.</p>
+        <RouterLink class="primary-button worker-hero__create" :to="{ name: 'new-report' }">
+          <span aria-hidden="true">+</span>
+          Новый отчет
+        </RouterLink>
+      </div>
     </section>
 
     <section class="worker-metrics" aria-label="Сводка отчетов">
       <article class="metric-card">
-        <span>Всего</span>
+        <span>Всего отчетов</span>
         <strong>{{ reportDraftStore.reports.length }}</strong>
       </article>
       <article class="metric-card">
-        <span>Готовы</span>
+        <span>Готовы и PDF</span>
         <strong>{{ readyReportCount }}</strong>
+      </article>
+      <article class="metric-card metric-card--mode">
+        <span>Черновики</span>
+        <strong>{{ reportDraftStore.reports.length - readyReportCount }}</strong>
+        <small>Изменения сохраняются автоматически</small>
       </article>
     </section>
 
     <section class="report-controls app-card">
       <label class="field-label" for="workerReportSearch">
-        Поиск
+        Поиск по истории
         <input
           id="workerReportSearch"
           v-model="searchQuery"
           class="field-control"
           type="search"
-          placeholder="Товар, заказ, место"
+          placeholder="Товар, заказ, работник или место"
         />
       </label>
     </section>
@@ -125,7 +181,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
     <section class="reports-section">
       <div class="reports-section__header">
         <div>
-          <p class="screen-kicker">Личная история</p>
+          <p class="screen-kicker">История проверок</p>
           <h2>Сохраненные отчеты</h2>
         </div>
         <span>{{ filteredReports.length }}</span>
@@ -133,16 +189,34 @@ function downloadBlob(blob: Blob, fileName: string): void {
 
       <div v-if="filteredReports.length" class="report-list">
         <article v-for="report in filteredReports" :key="report.id" class="report-card">
-          <div>
-            <h3>{{ report.productName || 'Товар не выбран' }}</h3>
-            <p>{{ formatReportTime(report.createdAt) }}</p>
-
-            <div class="report-card__chips">
-              <span>{{ getReportOrder(report) }}</span>
-              <span>{{ getReportPlace(report) }}</span>
-              <span>{{ getReportPhotoCount(report) }} фото</span>
+          <div class="report-card__heading">
+            <div>
+              <p class="report-card__eyebrow">Товар</p>
+              <h3>{{ report.productName || 'Товар не выбран' }}</h3>
             </div>
+            <span class="report-status" :class="`report-status--${report.status}`">
+              {{ getStatusLabel(report.status) }}
+            </span>
           </div>
+
+          <dl class="report-card__details">
+            <div>
+              <dt>Номер заказа</dt>
+              <dd>{{ getReportOrder(report) }}</dd>
+            </div>
+            <div>
+              <dt>Дата изменения</dt>
+              <dd>{{ formatReportTime(report.updatedAt) }}</dd>
+            </div>
+            <div>
+              <dt>Работник</dt>
+              <dd>{{ report.inspectorName || 'Не указан' }}</dd>
+            </div>
+            <div>
+              <dt>Фотографии</dt>
+              <dd>{{ getReportPhotoCount(report) }} шт.</dd>
+            </div>
+          </dl>
 
           <div class="report-card__actions">
             <RouterLink
@@ -151,16 +225,39 @@ function downloadBlob(blob: Blob, fileName: string): void {
             >
               Открыть
             </RouterLink>
-            <button class="primary-button" type="button" @click="downloadReportPdf(report)">
-              PDF
+            <RouterLink
+              v-if="report.status === 'draft'"
+              class="secondary-button"
+              :to="{ name: 'edit-report', params: { reportId: report.id } }"
+            >
+              Продолжить
+            </RouterLink>
+            <button
+              class="secondary-button"
+              type="button"
+              :disabled="activeActionReportId === report.id"
+              @click="downloadReportPdf(report)"
+            >
+              {{ activeActionReportId === report.id ? 'Создаем...' : 'PDF' }}
+            </button>
+            <button
+              v-if="report.status === 'draft'"
+              class="delete-button"
+              type="button"
+              :disabled="activeActionReportId === report.id"
+              @click="deleteReport(report)"
+            >
+              Удалить
             </button>
           </div>
         </article>
       </div>
 
-      <p v-else class="empty-state">
-        У вас пока нет сохраненных отчетов.
-      </p>
+      <div v-else class="empty-state empty-state--action">
+        <strong>Отчетов пока нет</strong>
+        <span>Выберите макет — после этого здесь появится черновик отчета.</span>
+        <RouterLink class="primary-button" :to="{ name: 'new-report' }"> Новый отчет </RouterLink>
+      </div>
     </section>
 
     <p v-if="reportDraftStore.errorMessage" class="error-message">
@@ -176,82 +273,113 @@ function downloadBlob(blob: Blob, fileName: string): void {
 
 .worker-hero {
   display: grid;
-  gap: 12px;
+  gap: 18px;
   border-radius: 0 0 8px 8px;
   margin: -18px -14px 0;
-  padding: 24px 16px 18px;
+  padding: 24px 16px 20px;
   background: var(--color-primary);
   color: #ffffff;
 }
 
-.worker-hero .screen-kicker {
-  margin: 0;
-  color: rgba(255, 255, 255, 0.78);
-}
-
-.worker-hero__topline,
+.worker-hero__content,
 .reports-section__header,
-.report-card,
-.report-card__actions {
+.report-card__heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
 }
 
-.worker-hero__topline span {
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 8px;
-  padding: 6px 9px;
-  background: rgba(255, 255, 255, 0.1);
-  font-size: 0.78rem;
-  font-weight: 850;
+.worker-hero__content {
+  align-items: end;
 }
 
 .worker-hero h1 {
   max-width: 620px;
-  font-size: 2rem;
+  font-size: clamp(1.8rem, 6vw, 2.5rem);
   font-weight: 900;
   line-height: 1.05;
 }
 
-.worker-hero p {
-  max-width: 640px;
-  color: rgba(255, 255, 255, 0.78);
-  font-size: 0.98rem;
+.worker-hero__create {
+  flex: 0 0 auto;
+  background: #ffffff;
+  color: var(--color-primary);
+}
+
+.worker-hero__create span {
+  margin-right: 8px;
+  font-size: 1.35rem;
+  line-height: 1;
 }
 
 .worker-metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(210px, 1.5fr);
   gap: 8px;
 }
 
 .metric-card {
   display: grid;
-  gap: 2px;
+  align-content: start;
+  gap: 3px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: 12px;
+  padding: 14px;
   background: var(--color-surface);
 }
 
 .metric-card span {
   color: var(--color-text-muted);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-weight: 850;
   text-transform: uppercase;
 }
 
 .metric-card strong {
   color: var(--color-text);
-  font-size: 1.42rem;
+  font-size: 1.5rem;
   font-weight: 900;
   line-height: 1.1;
 }
 
+.metric-card small {
+  margin-top: 3px;
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+}
+
+.metric-card--mode {
+  border-color: #bfd2c6;
+  background: var(--color-primary-soft);
+}
+
+.metric-card--mode strong {
+  color: var(--color-primary);
+  font-size: 1rem;
+}
+
 .report-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: end;
+  gap: 12px;
   padding: 12px;
+}
+
+.delete-button {
+  min-height: 46px;
+  border: 1px solid #efb7b1;
+  border-radius: 8px;
+  padding: 10px 13px;
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.delete-button:disabled {
+  opacity: 0.45;
 }
 
 .reports-section,
@@ -271,68 +399,144 @@ function downloadBlob(blob: Blob, fileName: string): void {
 }
 
 .report-card {
+  display: grid;
+  gap: 14px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: 14px;
+  padding: 16px;
   background: var(--color-surface);
   color: var(--color-text);
   box-shadow: 0 10px 24px var(--color-shadow);
 }
 
+.report-card__eyebrow {
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
 .report-card h3 {
-  font-size: 1rem;
+  margin-top: 2px;
+  font-size: 1.05rem;
   font-weight: 900;
   line-height: 1.25;
 }
 
-.report-card p {
-  margin-top: 4px;
-  color: var(--color-text-muted);
-  font-size: 0.86rem;
-}
-
-.report-card__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.report-card__chips span {
+.report-status {
+  flex: 0 0 auto;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: 5px 8px;
+  padding: 6px 9px;
   background: var(--color-surface-muted);
   color: var(--color-text-muted);
   font-size: 0.74rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.report-status--ready {
+  border-color: #b7dcc4;
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.report-status--exported {
+  border-color: #b8c9f3;
+  background: var(--color-info-soft);
+  color: var(--color-info);
+}
+
+.report-card__details {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.report-card__details div {
+  min-width: 0;
+}
+
+.report-card__details dt {
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
   font-weight: 800;
+  text-transform: uppercase;
+}
+
+.report-card__details dd {
+  overflow: hidden;
+  margin-top: 3px;
+  font-size: 0.86rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
 }
 
 .report-card__actions {
-  min-width: 108px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 140px));
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
 }
 
-.report-card__actions .primary-button,
-.report-card__actions .secondary-button {
+.report-card__actions .secondary-button,
+.report-card__actions .delete-button {
   min-height: 40px;
-  padding: 9px 12px;
+  padding: 8px 11px;
+}
+
+.empty-state--action {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+.empty-state--action strong {
+  color: var(--color-text);
+  font-weight: 900;
+}
+
+.empty-state--action .primary-button {
+  min-height: 42px;
+  margin-top: 4px;
 }
 
 @media (min-width: 700px) {
   .worker-hero {
     margin: -26px -24px 0;
-    padding: 34px 24px 24px;
+    padding: 34px 24px 26px;
   }
 }
 
-@media (max-width: 620px) {
-  .report-card,
-  .report-card__actions {
-    display: grid;
+@media (max-width: 760px) {
+  .worker-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .metric-card--mode {
+    grid-column: 1 / -1;
+  }
+
+  .report-card__details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .worker-hero__content,
+  .report-controls {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .worker-hero__create,
   .report-card__actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .delete-button {
+    grid-column: 1 / -1;
   }
 }
 </style>

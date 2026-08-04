@@ -1,4 +1,12 @@
-import type { ProductPhoto, ReportDraft, ReportPhotoCategory } from '@/types/report'
+import { documentTemplateRepository } from '@/shared/repositories/document-template-repository'
+import type {
+  DocumentTemplate,
+  DocumentTemplateSnapshot,
+  DocumentTemplateField,
+  ProductPhoto,
+  ReportDraft,
+  ReportPhotoCategory,
+} from '@/types/report'
 
 interface PdfPageImage {
   width: number
@@ -38,6 +46,14 @@ export async function generateQualityReportPdf(
   photos: ProductPhoto[],
 ): Promise<Blob> {
   const state = createDrawState()
+  const template =
+    report.templateSnapshot ??
+    (report.templateId ? await documentTemplateRepository.getById(report.templateId) : null)
+
+  if (template) {
+    await drawConfiguredTemplate(state, report, photos, template)
+    return buildPdfBlob(state.pages)
+  }
 
   drawCoverPage(state, report)
   await finishPage(state)
@@ -57,6 +73,106 @@ export async function generateQualityReportPdf(
   await finishPage(state)
 
   return buildPdfBlob(state.pages)
+}
+
+async function drawConfiguredTemplate(
+  state: DrawState,
+  report: ReportDraft,
+  photos: ProductPhoto[],
+  template: DocumentTemplate | DocumentTemplateSnapshot,
+): Promise<void> {
+  const sections = [...template.sections].sort(
+    (firstSection, secondSection) => firstSection.sortOrder - secondSection.sortOrder,
+  )
+
+  for (const section of sections) {
+    const fields = [...section.fields]
+      .sort((firstField, secondField) => firstField.sortOrder - secondField.sortOrder)
+      .filter((field) => field.type !== 'photo')
+
+    if (!fields.length) {
+      continue
+    }
+
+    resetPage(state)
+    drawSectionTitle(state, section.title)
+
+    if (section.description) {
+      drawMultilineText(state, section.description, PAGE_MARGIN, state.y, 528, 11, '#6b7280')
+      state.y += 18
+    }
+
+    drawRows(
+      state,
+      fields.map((field) => [
+        `${field.label}${field.required ? ' *' : ''}`,
+        getTemplateFieldValue(report, field),
+      ]),
+    )
+    await finishPage(state)
+  }
+
+  const photoFields = sections.flatMap((section) =>
+    [...section.fields]
+      .sort((firstField, secondField) => firstField.sortOrder - secondField.sortOrder)
+      .filter((field) => field.type === 'photo' || field.dataPath === 'photos'),
+  )
+
+  for (const [fieldIndex, field] of photoFields.entries()) {
+    const fieldPhotos = photos.filter(
+      (photo) =>
+        photo.templateFieldId === field.id ||
+        (!photo.templateFieldId && fieldIndex === 0),
+    )
+
+    await drawPhotoPage(state, field.label, field.helpText, fieldPhotos)
+    await finishPage(state)
+  }
+}
+
+function getTemplateFieldValue(report: ReportDraft, field: DocumentTemplateField): string {
+  if (field.type === 'signature') {
+    return report.inspectorName
+  }
+
+  if (field.dataPath.startsWith('custom.')) {
+    return report.customFieldValues?.[field.dataPath] ?? ''
+  }
+
+  const pathParts = field.dataPath.split('.')
+  let value: unknown = report
+
+  for (const pathPart of pathParts) {
+    if (!value || typeof value !== 'object' || !(pathPart in value)) {
+      return ''
+    }
+
+    value = (value as Record<string, unknown>)[pathPart]
+  }
+
+  if (field.dataPath === 'sampling.points' && Array.isArray(value)) {
+    return value
+      .map((point) => {
+        if (!point || typeof point !== 'object') {
+          return ''
+        }
+
+        const record = point as Record<string, unknown>
+        return `${String(record.pallet ?? '')}: ${String(record.place ?? '')}`
+      })
+      .filter(Boolean)
+      .join(', ')
+  }
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    if (field.type === 'date' && typeof value === 'string') {
+      return formatDate(value)
+    }
+
+    return String(value)
+  }
+
+  return ''
 }
 
 function createDrawState(): DrawState {
@@ -200,21 +316,36 @@ async function drawPhotoCategoryPage(
   subtitle: string,
   photos: ProductPhoto[],
 ): Promise<void> {
+  await drawPhotoPage(
+    state,
+    title,
+    subtitle,
+    photos.filter((photo) => photo.category === category),
+  )
+}
+
+async function drawPhotoPage(
+  state: DrawState,
+  title: string,
+  subtitle: string,
+  photos: ProductPhoto[],
+): Promise<void> {
   resetPage(state)
   drawSectionTitle(state, title)
-  drawText(state, subtitle, PAGE_MARGIN, state.y, 12, '#4b5563', false)
-  state.y += 28
 
-  const categoryPhotos = photos.filter((photo) => photo.category === category)
+  if (subtitle) {
+    drawText(state, subtitle, PAGE_MARGIN, state.y, 12, '#4b5563', false)
+    state.y += 28
+  }
 
-  if (!categoryPhotos.length) {
+  if (!photos.length) {
     drawText(state, 'Фото не добавлены.', PAGE_MARGIN, state.y, 13, '#6b7280', false)
     return
   }
 
-  for (const photo of categoryPhotos.slice(0, 2)) {
+  for (const photo of photos.slice(0, 2)) {
     const bitmap = await createImageBitmap(photo.blob)
-    const imageBoxHeight = categoryPhotos.length > 1 ? 260 : 560
+    const imageBoxHeight = photos.length > 1 ? 260 : 560
 
     drawContainedImage(state, bitmap, PAGE_MARGIN, state.y, 528, imageBoxHeight)
     state.y += imageBoxHeight + 10

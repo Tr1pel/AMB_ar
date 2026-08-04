@@ -1,10 +1,19 @@
 {
   "name": "АМБАР QC",
   "short_name": "АМБАР",
-  "description": "Локальные черновики отчетов контроля качества на складе",
+  "description": "Производственная система контроля качества для склада",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#f4f7f6",
-  "theme_color": "#0f766e",
-  "orientation": "portrait"
+  "background_color": "#edf1ec",
+  "theme_color": "#12372a",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }

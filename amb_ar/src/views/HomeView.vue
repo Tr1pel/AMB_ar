@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { generateQualityReportPdf } from '@/shared/documents/quality-report-pdf'
-import {
-  getReportDraftDetails,
-  saveGeneratedDocument,
-} from '@/shared/repositories/report-draft-repository'
+import { getReportDraftDetails } from '@/shared/repositories/report-draft-repository'
+import { useAuthStore } from '@/stores/auth.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
-import type { ReportDraft } from '@/types/report'
+import type { ReportDraft, ReportStatus } from '@/types/report'
 
 const reportDraftStore = useReportDraftStore()
+const authStore = useAuthStore()
 const searchQuery = ref('')
+const activeActionReportId = ref<string | null>(null)
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 const filteredReports = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
@@ -35,8 +36,30 @@ const readyReportCount = computed(
 )
 
 onMounted(() => {
-  void reportDraftStore.loadHome()
+  void refreshAdminReports()
+  refreshTimer = setInterval(() => void refreshAdminReports(), 20_000)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
+
+onUnmounted(() => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+  }
+
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
+
+async function refreshAdminReports(): Promise<void> {
+  if (!reportDraftStore.isLoading) {
+    await reportDraftStore.loadHome()
+  }
+}
+
+function handleVisibilityChange(): void {
+  if (document.visibilityState === 'visible') {
+    void refreshAdminReports()
+  }
+}
 
 function formatReportTime(timestamp: number): string {
   return new Intl.DateTimeFormat('ru-RU', {
@@ -63,19 +86,53 @@ function getReportPhotoPreviewIds(report: ReportDraft): string[] {
   return report.photoIds?.slice(0, 3) ?? []
 }
 
-async function downloadReportPdf(report: ReportDraft): Promise<void> {
-  const details = await getReportDraftDetails(report.id)
-
-  if (!details) {
-    return
+function getStatusLabel(status: ReportStatus): string {
+  const labels: Record<ReportStatus, string> = {
+    draft: 'Черновик',
+    ready: 'Отправлен',
+    exported: 'Отправлен · PDF',
+    archived: 'Удален',
   }
 
-  const pdfBlob = await generateQualityReportPdf(details.draft, details.photos)
-  const fileName = `${details.draft.mainInfo.orderNumber || details.draft.id}.pdf`
-  const document = await saveGeneratedDocument(details.draft.id, pdfBlob, fileName, 'application/pdf')
+  return labels[status]
+}
 
-  downloadBlob(document.blob, document.fileName)
-  await reportDraftStore.refreshReports()
+async function downloadReportPdf(report: ReportDraft): Promise<void> {
+  activeActionReportId.value = report.id
+  reportDraftStore.clearError()
+
+  try {
+    const accountId = authStore.currentAccount?.id
+
+    if (!accountId) {
+      throw new Error('Нужно войти под администратором')
+    }
+
+    const details = await getReportDraftDetails(report.id, accountId)
+
+    if (!details) {
+      throw new Error('Отчет не найден на сервере')
+    }
+
+    const pdfBlob = await generateQualityReportPdf(details.draft, details.photos)
+    const fileName = `${details.draft.mainInfo.orderNumber || details.draft.id}.pdf`
+    const document = await reportDraftStore.saveDocument(
+      details.draft.id,
+      pdfBlob,
+      fileName,
+      'application/pdf',
+    )
+
+    if (!document) {
+      return
+    }
+
+    downloadBlob(document.blob, document.fileName)
+  } catch (error) {
+    reportDraftStore.setError(error)
+  } finally {
+    activeActionReportId.value = null
+  }
 }
 
 function downloadBlob(blob: Blob, fileName: string): void {
@@ -92,17 +149,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
 <template>
   <main class="screen-page home-page">
     <section class="home-hero">
-      <div class="home-hero__topline">
-        <p class="screen-kicker">АМБАР QC</p>
-        <span class="home-hero__mode">
-          Администратор
-        </span>
-      </div>
-
       <h1 class="home-hero__title">Отчеты работников</h1>
-      <p class="home-hero__subtitle">
-        Просматривайте готовые отчеты, автора, дату создания и товар. Документы хранятся локально.
-      </p>
     </section>
 
     <section class="home-metrics" aria-label="Сводка отчетов">
@@ -128,28 +175,35 @@ function downloadBlob(blob: Blob, fileName: string): void {
         />
       </label>
 
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="reportDraftStore.isLoading"
+        @click="refreshAdminReports"
+      >
+        {{ reportDraftStore.isLoading ? 'Обновляем...' : 'Обновить с сервера' }}
+      </button>
     </section>
 
     <section class="reports-section">
       <div class="reports-section__header">
         <div>
-          <p class="screen-kicker">Локальная база</p>
+          <p class="screen-kicker">Журнал предприятия</p>
           <h2>Все отчеты</h2>
         </div>
         <span>{{ filteredReports.length }}</span>
       </div>
 
       <div v-if="filteredReports.length" class="report-list">
-        <article
-          v-for="report in filteredReports"
-          :key="report.id"
-          class="report-card"
-        >
+        <article v-for="report in filteredReports" :key="report.id" class="report-card">
           <div class="report-card__body">
             <div class="report-card__title-row">
               <h3 class="report-card__title">
                 {{ report.productName || 'Товар не выбран' }}
               </h3>
+              <span class="report-status" :class="`report-status--${report.status}`">
+                {{ getStatusLabel(report.status) }}
+              </span>
             </div>
 
             <p class="report-card__meta">
@@ -170,7 +224,10 @@ function downloadBlob(blob: Blob, fileName: string): void {
               :key="photoId"
               class="report-card__photo"
             />
-            <span v-if="!getReportPhotoCount(report)" class="report-card__photo report-card__photo--empty" />
+            <span
+              v-if="!getReportPhotoCount(report)"
+              class="report-card__photo report-card__photo--empty"
+            />
           </div>
 
           <div class="report-card__actions">
@@ -180,8 +237,13 @@ function downloadBlob(blob: Blob, fileName: string): void {
             >
               Открыть
             </RouterLink>
-            <button class="primary-button" type="button" @click="downloadReportPdf(report)">
-              PDF
+            <button
+              class="primary-button"
+              type="button"
+              :disabled="activeActionReportId === report.id"
+              @click="downloadReportPdf(report)"
+            >
+              {{ activeActionReportId === report.id ? 'Создаем...' : 'PDF' }}
             </button>
           </div>
         </article>
@@ -213,12 +275,6 @@ function downloadBlob(blob: Blob, fileName: string): void {
   color: #ffffff;
 }
 
-.home-hero .screen-kicker {
-  margin: 0;
-  color: rgba(255, 255, 255, 0.78);
-}
-
-.home-hero__topline,
 .report-card__title-row,
 .reports-section__header {
   display: flex;
@@ -227,29 +283,11 @@ function downloadBlob(blob: Blob, fileName: string): void {
   gap: 12px;
 }
 
-.home-hero__mode {
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 8px;
-  padding: 6px 9px;
-  background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
-  font-size: 0.78rem;
-  font-weight: 850;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
 .home-hero__title {
   max-width: 620px;
   font-size: 2rem;
   font-weight: 900;
   line-height: 1.05;
-}
-
-.home-hero__subtitle {
-  max-width: 640px;
-  color: rgba(255, 255, 255, 0.78);
-  font-size: 0.98rem;
 }
 
 .home-hero__actions {
@@ -392,6 +430,24 @@ function downloadBlob(blob: Blob, fileName: string): void {
   font-size: 1rem;
   font-weight: 900;
   line-height: 1.25;
+}
+
+.report-status {
+  flex: 0 0 auto;
+  border: 1px solid #b7dcc4;
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: var(--color-success-soft);
+  color: var(--color-success);
+  font-size: 0.74rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.report-status--exported {
+  border-color: #b8c9f3;
+  background: var(--color-info-soft);
+  color: var(--color-info);
 }
 
 .report-card__meta {

@@ -1,105 +1,82 @@
-import type { Account, ReportDraft, ReportTemplateOption } from '@/types/report'
+import type { GeneratedDocument, ProductPhoto, ReportDraft } from '@/types/report'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
+const API_TIMEOUT_MS = 30_000
 
-export async function fetchServerAccounts(adminAccountId: string): Promise<Account[]> {
-  return apiGet<Account[]>('/api/accounts', adminAccountId)
+type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
+
+export interface SerializedProductPhoto extends Omit<ProductPhoto, 'blob'> {
+  blobBase64: string
 }
 
-export async function findServerAccountByLoginNumber(loginNumber: string): Promise<Account | null> {
-  return apiGet<Account | null>(`/api/accounts/login?loginNumber=${encodeURIComponent(loginNumber)}`)
+export interface SerializedGeneratedDocument extends Omit<GeneratedDocument, 'blob'> {
+  blobBase64: string
 }
 
-export async function getServerAccount(accountId: string): Promise<Account | null> {
-  return apiGet<Account | null>(`/api/accounts/${encodeURIComponent(accountId)}`)
+export interface ServerReportDetails {
+  draft: ReportDraft
+  photos: SerializedProductPhoto[]
+  documents: SerializedGeneratedDocument[]
 }
 
-export async function createServerAccount(
-  input: Pick<Account, 'loginNumber' | 'fullName' | 'role'>,
-  adminAccountId: string,
-): Promise<Account> {
-  return apiPost<Account>('/api/accounts', input, adminAccountId)
+export async function apiGet<T>(path: string, accountId?: string): Promise<T> {
+  return apiRequest<T>(path, { method: 'GET', accountId })
 }
 
-export async function updateServerAccount(
-  accountId: string,
-  input: Partial<Pick<Account, 'loginNumber' | 'fullName' | 'role' | 'isActive'>>,
-  adminAccountId: string,
-): Promise<Account> {
-  return apiPatch<Account>(`/api/accounts/${encodeURIComponent(accountId)}`, input, adminAccountId)
+export async function apiPost<T>(path: string, body?: unknown, accountId?: string): Promise<T> {
+  return apiRequest<T>(path, { method: 'POST', body, accountId })
 }
 
-export async function deleteServerAccount(
-  accountId: string,
-  adminAccountId: string,
-): Promise<void> {
-  await apiDelete(`/api/accounts/${encodeURIComponent(accountId)}`, adminAccountId)
+export async function apiPut<T>(path: string, body: unknown, accountId?: string): Promise<T> {
+  return apiRequest<T>(path, { method: 'PUT', body, accountId })
 }
 
-export async function fetchServerTemplateOptions(): Promise<ReportTemplateOption[]> {
-  return apiGet<ReportTemplateOption[]>('/api/template-options')
+export async function apiDelete(path: string, accountId?: string): Promise<void> {
+  await apiRequest(path, { method: 'DELETE', accountId })
 }
 
-export async function saveServerTemplateOption(
-  input: Partial<ReportTemplateOption>,
-  adminAccountId: string,
-): Promise<ReportTemplateOption> {
-  return apiPost<ReportTemplateOption>('/api/template-options', input, adminAccountId)
+export async function serializePhoto(photo: ProductPhoto): Promise<SerializedProductPhoto> {
+  const { blob, ...metadata } = photo
+
+  return {
+    ...metadata,
+    blobBase64: await blobToBase64(blob),
+  }
 }
 
-export async function deleteServerTemplateOption(
-  optionId: string,
-  adminAccountId: string,
-): Promise<void> {
-  await apiDelete(`/api/template-options/${encodeURIComponent(optionId)}`, adminAccountId)
+export function deserializePhoto(photo: SerializedProductPhoto): ProductPhoto {
+  const { blobBase64, ...metadata } = photo
+
+  return {
+    ...metadata,
+    blob: base64ToBlob(blobBase64, photo.mimeType),
+  }
 }
 
-export async function fetchServerReports(adminAccountId: string): Promise<ReportDraft[]> {
-  return apiGet<ReportDraft[]>('/api/reports', adminAccountId)
+export async function serializeDocument(
+  document: GeneratedDocument,
+): Promise<SerializedGeneratedDocument> {
+  const { blob, ...metadata } = document
+
+  return {
+    ...metadata,
+    blobBase64: await blobToBase64(blob),
+  }
 }
 
-export async function fetchServerWorkerReports(workerAccountId: string): Promise<ReportDraft[]> {
-  return apiGet<ReportDraft[]>('/api/reports/mine', workerAccountId)
-}
+export function deserializeDocument(document: SerializedGeneratedDocument): GeneratedDocument {
+  const { blobBase64, ...metadata } = document
 
-export async function uploadServerReport(report: ReportDraft): Promise<void> {
-  await apiPost('/api/reports', report)
-}
-
-async function apiGet<T>(path: string, accountId?: string): Promise<T> {
-  return apiRequest<T>(path, {
-    method: 'GET',
-    accountId,
-  })
-}
-
-async function apiPost<T>(path: string, body: unknown, accountId?: string): Promise<T> {
-  return apiRequest<T>(path, {
-    method: 'POST',
-    body,
-    accountId,
-  })
-}
-
-async function apiPatch<T>(path: string, body: unknown, accountId?: string): Promise<T> {
-  return apiRequest<T>(path, {
-    method: 'PATCH',
-    body,
-    accountId,
-  })
-}
-
-async function apiDelete(path: string, accountId?: string): Promise<void> {
-  await apiRequest(path, {
-    method: 'DELETE',
-    accountId,
-  })
+  return {
+    ...metadata,
+    blob: base64ToBlob(blobBase64, document.mimeType),
+  }
 }
 
 async function apiRequest<T>(
   path: string,
   options: {
-    method: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+    method: HttpMethod
     body?: unknown
     accountId?: string
   },
@@ -114,11 +91,26 @@ async function apiRequest<T>(
     headers.set('X-Account-Id', options.accountId)
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: options.method,
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  })
+  let response: Response
+  const abortController = new AbortController()
+  const timeoutId = setTimeout(() => abortController.abort(), API_TIMEOUT_MS)
+
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: options.method,
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: abortController.signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Сервер не ответил вовремя. Повторите попытку.')
+    }
+
+    throw new Error('Сервер недоступен. Проверьте подключение и повторите попытку.')
+  } finally {
+    clearTimeout(timeoutId)
+  }
 
   if (!response.ok) {
     throw new Error(await getErrorMessage(response))
@@ -134,9 +126,31 @@ async function apiRequest<T>(
 async function getErrorMessage(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as { message?: string }
-
-    return body.message ?? 'Сервер вернул ошибку'
+    return body.message ?? `Сервер вернул ошибку ${response.status}`
   } catch {
-    return 'Сервер вернул ошибку'
+    return `Сервер вернул ошибку ${response.status}`
   }
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  const chunkSize = 0x8000
+  let binary = ''
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+  }
+
+  return btoa(binary)
+}
+
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  return new Blob([bytes], { type: mimeType })
 }
