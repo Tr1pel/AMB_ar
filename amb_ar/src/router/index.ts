@@ -25,7 +25,15 @@ const router = createRouter({
       path: '/admin/reports',
       name: 'admin-reports',
       component: HomeView,
+      props: { archiveMode: false },
       meta: { requiresAuth: true, roles: ['admin'], title: 'Журнал отчетов' },
+    },
+    {
+      path: '/admin/reports/archive',
+      name: 'admin-report-archive',
+      component: HomeView,
+      props: { archiveMode: true },
+      meta: { requiresAuth: true, roles: ['admin'], title: 'Архив отчетов' },
     },
     {
       path: '/admin/template',

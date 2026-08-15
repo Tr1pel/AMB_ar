@@ -1,23 +1,45 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import { generateQualityReportPdf } from '@/shared/documents/quality-report-pdf'
-import { getReportDraftDetails } from '@/shared/repositories/report-draft-repository'
+import {
+  getReportDraftDetails,
+  listReportPhotoPreviews,
+} from '@/shared/repositories/report-draft-repository'
+import { getReportDisplayTitle } from '@/shared/reports/report-display'
 import { useAuthStore } from '@/stores/auth.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
 import type { ReportDraft, ReportStatus } from '@/types/report'
+
+const props = withDefaults(
+  defineProps<{
+    archiveMode?: boolean
+  }>(),
+  {
+    archiveMode: false,
+  },
+)
 
 const reportDraftStore = useReportDraftStore()
 const authStore = useAuthStore()
 const searchQuery = ref('')
 const activeActionReportId = ref<string | null>(null)
+const activeArchiveReportId = ref<string | null>(null)
+const activePermanentDeleteReportId = ref<string | null>(null)
+const activeRestoreReportId = ref<string | null>(null)
+const nowTimestamp = ref(Date.now())
+const reportPhotoPreviewUrls = ref<Record<string, string[]>>({})
+const photoPreviewSignatures = new Map<string, string>()
 let refreshTimer: ReturnType<typeof setInterval> | null = null
+let photoPreviewGeneration = 0
 
+const displayedReports = computed(() =>
+  props.archiveMode ? reportDraftStore.archivedReports : reportDraftStore.reports,
+)
 const filteredReports = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
 
-  return reportDraftStore.reports.filter((report) => {
+  return displayedReports.value.filter((report) => {
     const searchValue = [
       report.productName,
       report.inspectorName,
@@ -41,18 +63,92 @@ onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
+watch(
+  () => props.archiveMode,
+  () => void refreshAdminReports(),
+)
+
 onUnmounted(() => {
+  photoPreviewGeneration += 1
+
   if (refreshTimer) {
     clearInterval(refreshTimer)
   }
 
+  Object.values(reportPhotoPreviewUrls.value).flat().forEach(URL.revokeObjectURL)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
 async function refreshAdminReports(): Promise<void> {
+  nowTimestamp.value = Date.now()
+
   if (!reportDraftStore.isLoading) {
-    await reportDraftStore.loadHome()
+    await (props.archiveMode ? reportDraftStore.loadArchive() : reportDraftStore.loadHome())
+    await refreshReportPhotoPreviews(displayedReports.value)
   }
+}
+
+async function refreshReportPhotoPreviews(reports: ReportDraft[]): Promise<void> {
+  const accountId = authStore.currentAccount?.id
+
+  if (!accountId) {
+    return
+  }
+
+  const generation = ++photoPreviewGeneration
+  const visibleReportIds = new Set(reports.map((report) => report.id))
+
+  for (const reportId of Object.keys(reportPhotoPreviewUrls.value)) {
+    if (!visibleReportIds.has(reportId)) {
+      replaceReportPhotoPreviewUrls(reportId, [])
+      photoPreviewSignatures.delete(reportId)
+    }
+  }
+
+  const results = await Promise.allSettled(
+    reports.map(async (report) => {
+      const signature = (report.photoIds ?? []).slice(0, 3).join('|')
+
+      if (photoPreviewSignatures.get(report.id) === signature) {
+        return
+      }
+
+      if (!signature) {
+        replaceReportPhotoPreviewUrls(report.id, [])
+        photoPreviewSignatures.set(report.id, signature)
+        return
+      }
+
+      const photos = await listReportPhotoPreviews(report.id, accountId)
+      const urls = photos.map((photo) => URL.createObjectURL(photo.blob))
+
+      if (generation !== photoPreviewGeneration) {
+        urls.forEach(URL.revokeObjectURL)
+        return
+      }
+
+      replaceReportPhotoPreviewUrls(report.id, urls)
+      photoPreviewSignatures.set(report.id, signature)
+    }),
+  )
+  const failedResult = results.find((result) => result.status === 'rejected')
+
+  if (failedResult?.status === 'rejected' && generation === photoPreviewGeneration) {
+    reportDraftStore.setError(failedResult.reason)
+  }
+}
+
+function replaceReportPhotoPreviewUrls(reportId: string, urls: string[]): void {
+  reportPhotoPreviewUrls.value[reportId]?.forEach(URL.revokeObjectURL)
+  const nextPreviewUrls = { ...reportPhotoPreviewUrls.value }
+
+  if (urls.length) {
+    nextPreviewUrls[reportId] = urls
+  } else {
+    delete nextPreviewUrls[reportId]
+  }
+
+  reportPhotoPreviewUrls.value = nextPreviewUrls
 }
 
 function handleVisibilityChange(): void {
@@ -70,6 +166,71 @@ function formatReportTime(timestamp: number): string {
   }).format(timestamp)
 }
 
+function formatArchiveDate(timestamp: number): string {
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric',
+  }).format(timestamp)
+}
+
+function getArchivedAt(report: ReportDraft): number {
+  return report._deletedAt ?? report.updatedAt
+}
+
+function getPermanentDeletionAt(report: ReportDraft): number {
+  return addCalendarMonth(getArchivedAt(report))
+}
+
+function addCalendarMonth(timestamp: number): number {
+  const date = new Date(timestamp)
+  const originalDay = date.getUTCDate()
+
+  date.setUTCDate(1)
+  date.setUTCMonth(date.getUTCMonth() + 1)
+  const lastDayOfTargetMonth = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0),
+  ).getUTCDate()
+  date.setUTCDate(Math.min(originalDay, lastDayOfTargetMonth))
+
+  return date.getTime()
+}
+
+function formatDeletionCountdown(report: ReportDraft): string {
+  const remainingMs = Math.max(0, getPermanentDeletionAt(report) - nowTimestamp.value)
+
+  if (remainingMs === 0) {
+    return 'удалится при ближайшей очистке'
+  }
+
+  const remainingDays = remainingMs / (24 * 60 * 60 * 1000)
+
+  if (remainingDays >= 1) {
+    const days = Math.ceil(remainingDays)
+    return `удалится через ${days} ${pluralize(days, 'день', 'дня', 'дней')}`
+  }
+
+  const remainingHours = remainingMs / (60 * 60 * 1000)
+
+  if (remainingHours >= 1) {
+    const hours = Math.ceil(remainingHours)
+    return `удалится через ${hours} ${pluralize(hours, 'час', 'часа', 'часов')}`
+  }
+
+  const minutes = Math.max(1, Math.ceil(remainingMs / (60 * 1000)))
+  return `удалится через ${minutes} ${pluralize(minutes, 'минуту', 'минуты', 'минут')}`
+}
+
+function pluralize(value: number, one: string, few: string, many: string): string {
+  const lastTwoDigits = value % 100
+  const lastDigit = value % 10
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return many
+  if (lastDigit === 1) return one
+  if (lastDigit >= 2 && lastDigit <= 4) return few
+  return many
+}
+
 function getReportPlace(report: ReportDraft): string {
   return report.mainInfo?.placeOfSurvey || 'Место не указано'
 }
@@ -82,16 +243,12 @@ function getReportPhotoCount(report: ReportDraft): number {
   return report.photoIds?.length ?? 0
 }
 
-function getReportPhotoPreviewIds(report: ReportDraft): string[] {
-  return report.photoIds?.slice(0, 3) ?? []
-}
-
 function getStatusLabel(status: ReportStatus): string {
   const labels: Record<ReportStatus, string> = {
     draft: 'Черновик',
     ready: 'Отправлен',
     exported: 'Отправлен · PDF',
-    archived: 'Удален',
+    archived: 'В архиве',
   }
 
   return labels[status]
@@ -114,24 +271,76 @@ async function downloadReportPdf(report: ReportDraft): Promise<void> {
       throw new Error('Отчет не найден на сервере')
     }
 
-    const pdfBlob = await generateQualityReportPdf(details.draft, details.photos)
-    const fileName = `${details.draft.mainInfo.orderNumber || details.draft.id}.pdf`
-    const document = await reportDraftStore.saveDocument(
-      details.draft.id,
-      pdfBlob,
-      fileName,
-      'application/pdf',
-    )
+    if (report.status === 'archived') {
+      const latestDocument = details.documents.at(-1)
 
-    if (!document) {
-      return
+      if (latestDocument) {
+        downloadBlob(latestDocument.blob, latestDocument.fileName)
+        return
+      }
+
+      throw new Error('Для архивного отчёта PDF не найден')
     }
 
-    downloadBlob(document.blob, document.fileName)
+    const document = await reportDraftStore.generateDocument(details.draft.id)
+
+    if (document) {
+      downloadBlob(document.blob, document.fileName)
+    }
   } catch (error) {
     reportDraftStore.setError(error)
   } finally {
     activeActionReportId.value = null
+  }
+}
+
+async function archiveReport(report: ReportDraft): Promise<void> {
+  const shouldArchive = window.confirm(
+    `Переместить отчет «${report.mainInfo.orderNumber || report.productName}» в архив?\n\nОтчет исчезнет из рабочего журнала и будет безвозвратно удален через месяц вместе с фотографиями и PDF. До этого срока он останется доступен в архиве.`,
+  )
+
+  if (!shouldArchive) {
+    return
+  }
+
+  activeArchiveReportId.value = report.id
+  await reportDraftStore.deleteReport(report.id)
+  activeArchiveReportId.value = null
+}
+
+async function permanentlyDeleteReport(report: ReportDraft): Promise<void> {
+  const shouldDelete = window.confirm(
+    `Удалить отчет «${report.mainInfo.orderNumber || report.productName}» навсегда?\n\nВыбранный отчет, все его фотографии и PDF будут удалены немедленно без возможности восстановления. Остальные отчеты в архиве не изменятся.`,
+  )
+
+  if (!shouldDelete) {
+    return
+  }
+
+  activePermanentDeleteReportId.value = report.id
+
+  try {
+    await reportDraftStore.deleteArchivedReport(report.id)
+  } finally {
+    activePermanentDeleteReportId.value = null
+  }
+}
+
+async function restoreReport(report: ReportDraft): Promise<void> {
+  const shouldRestore = window.confirm(
+    `Вернуть отчет «${report.mainInfo.orderNumber || report.productName}» из архива?`,
+  )
+
+  if (!shouldRestore) {
+    return
+  }
+
+  activeRestoreReportId.value = report.id
+
+  try {
+    await reportDraftStore.restoreReport(report.id)
+  } finally {
+    activeRestoreReportId.value = null
   }
 }
 
@@ -149,15 +358,21 @@ function downloadBlob(blob: Blob, fileName: string): void {
 <template>
   <main class="screen-page home-page">
     <section class="home-hero">
-      <h1 class="home-hero__title">Отчеты работников</h1>
+      <h1 class="home-hero__title">
+        {{ props.archiveMode ? 'Архив отчетов' : 'Отчеты работников' }}
+      </h1>
     </section>
 
-    <section class="home-metrics" aria-label="Сводка отчетов">
+    <section
+      class="home-metrics"
+      :class="{ 'home-metrics--single': props.archiveMode }"
+      aria-label="Сводка отчетов"
+    >
       <article class="metric-card">
-        <span class="metric-card__label">Всего</span>
-        <strong>{{ reportDraftStore.reports.length }}</strong>
+        <span class="metric-card__label">{{ props.archiveMode ? 'В архиве' : 'Всего' }}</span>
+        <strong>{{ displayedReports.length }}</strong>
       </article>
-      <article class="metric-card">
+      <article v-if="!props.archiveMode" class="metric-card">
         <span class="metric-card__label">Готовы</span>
         <strong>{{ readyReportCount }}</strong>
       </article>
@@ -189,7 +404,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
       <div class="reports-section__header">
         <div>
           <p class="screen-kicker">Журнал предприятия</p>
-          <h2>Все отчеты</h2>
+          <h2>{{ props.archiveMode ? 'Архивные отчеты' : 'Все отчеты' }}</h2>
         </div>
         <span>{{ filteredReports.length }}</span>
       </div>
@@ -199,7 +414,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
           <div class="report-card__body">
             <div class="report-card__title-row">
               <h3 class="report-card__title">
-                {{ report.productName || 'Товар не выбран' }}
+                {{ getReportDisplayTitle(report) }}
               </h3>
               <span class="report-status" :class="`report-status--${report.status}`">
                 {{ getStatusLabel(report.status) }}
@@ -211,6 +426,12 @@ function downloadBlob(blob: Blob, fileName: string): void {
               {{ formatReportTime(report.createdAt) }}
             </p>
 
+            <p v-if="props.archiveMode" class="report-card__archive-meta">
+              В архиве с {{ formatArchiveDate(getArchivedAt(report)) }} ·
+              <strong>{{ formatDeletionCountdown(report) }}</strong>
+              ({{ formatArchiveDate(getPermanentDeletionAt(report)) }})
+            </p>
+
             <div class="report-card__chips">
               <span>{{ getReportOrder(report) }}</span>
               <span>{{ getReportPlace(report) }}</span>
@@ -219,38 +440,76 @@ function downloadBlob(blob: Blob, fileName: string): void {
           </div>
 
           <div class="report-card__photos" aria-hidden="true">
-            <span
-              v-for="photoId in getReportPhotoPreviewIds(report)"
-              :key="photoId"
+            <img
+              v-for="(photoUrl, photoIndex) in reportPhotoPreviewUrls[report.id] ?? []"
+              :key="`${report.id}-${photoIndex}`"
               class="report-card__photo"
-            />
-            <span
-              v-if="!getReportPhotoCount(report)"
-              class="report-card__photo report-card__photo--empty"
+              :src="photoUrl"
+              alt=""
             />
           </div>
 
           <div class="report-card__actions">
             <RouterLink
               class="secondary-button"
-              :to="{ name: 'report-details', params: { reportId: report.id } }"
+              :to="{
+                name: 'report-details',
+                params: { reportId: report.id },
+                query: props.archiveMode ? { from: 'archive' } : {},
+              }"
             >
               Открыть
             </RouterLink>
             <button
               class="primary-button"
               type="button"
-              :disabled="activeActionReportId === report.id"
+              :disabled="
+                activeActionReportId === report.id ||
+                activeArchiveReportId === report.id ||
+                activeRestoreReportId === report.id ||
+                activePermanentDeleteReportId === report.id
+              "
               @click="downloadReportPdf(report)"
             >
               {{ activeActionReportId === report.id ? 'Создаем...' : 'PDF' }}
+            </button>
+            <button
+              v-if="props.archiveMode"
+              class="secondary-button"
+              type="button"
+              :disabled="activeRestoreReportId === report.id || reportDraftStore.isSaving"
+              @click="restoreReport(report)"
+            >
+              {{ activeRestoreReportId === report.id ? 'Возвращаем...' : 'Вернуть из архива' }}
+            </button>
+            <button
+              v-if="!props.archiveMode"
+              class="danger-button"
+              type="button"
+              :disabled="activeArchiveReportId === report.id || reportDraftStore.isSaving"
+              @click="archiveReport(report)"
+            >
+              {{ activeArchiveReportId === report.id ? 'Переносим...' : 'Удалить' }}
+            </button>
+            <button
+              v-else
+              class="danger-button"
+              type="button"
+              :disabled="activePermanentDeleteReportId === report.id || reportDraftStore.isSaving"
+              @click="permanentlyDeleteReport(report)"
+            >
+              {{ activePermanentDeleteReportId === report.id ? 'Удаляем...' : 'Удалить навсегда' }}
             </button>
           </div>
         </article>
       </div>
 
       <p v-else class="empty-state">
-        Отчетов пока нет. Когда работники сохранят документы, они появятся здесь.
+        {{
+          props.archiveMode
+            ? 'В архиве пока нет отчетов.'
+            : 'Отчетов пока нет. Когда работники сохранят документы, они появятся здесь.'
+        }}
       </p>
     </section>
 
@@ -316,6 +575,10 @@ function downloadBlob(blob: Blob, fileName: string): void {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.home-metrics--single {
+  grid-template-columns: 1fr;
 }
 
 .metric-card {
@@ -450,10 +713,23 @@ function downloadBlob(blob: Blob, fileName: string): void {
   color: var(--color-info);
 }
 
+.report-status--archived {
+  border-color: #e5bf7d;
+  background: #fff8e8;
+  color: #8a5a00;
+}
+
 .report-card__meta {
   margin-top: 4px;
   color: var(--color-text-muted);
   font-size: 0.86rem;
+}
+
+.report-card__archive-meta {
+  margin-top: 5px;
+  color: #8a5a00;
+  font-size: 0.78rem;
+  font-weight: 750;
 }
 
 .report-card__chips {
@@ -486,9 +762,23 @@ function downloadBlob(blob: Blob, fileName: string): void {
 }
 
 .report-card__actions .primary-button,
-.report-card__actions .secondary-button {
+.report-card__actions .secondary-button,
+.report-card__actions .danger-button {
   min-height: 40px;
   padding: 9px 12px;
+}
+
+.danger-button {
+  border: 1px solid #e3b5b5;
+  border-radius: 8px;
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  font-weight: 850;
+}
+
+.danger-button:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .report-card__photo {
@@ -497,20 +787,13 @@ function downloadBlob(blob: Blob, fileName: string): void {
   border: 2px solid var(--color-surface);
   border-radius: 8px;
   margin-left: -12px;
-  background:
-    linear-gradient(135deg, rgba(34, 57, 43, 0.18), rgba(184, 111, 28, 0.16)),
-    var(--color-primary-soft);
+  background: var(--color-surface-muted);
   box-shadow: 0 8px 18px rgba(34, 57, 43, 0.12);
+  object-fit: cover;
 }
 
 .report-card__photo:first-child {
   margin-left: 0;
-}
-
-.report-card__photo--empty {
-  background:
-    linear-gradient(180deg, transparent 42%, rgba(34, 57, 43, 0.08) 42% 58%, transparent 58%),
-    var(--color-surface-muted);
 }
 
 @media (min-width: 700px) {

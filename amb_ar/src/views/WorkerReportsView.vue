@@ -2,8 +2,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import { generateQualityReportPdf } from '@/shared/documents/quality-report-pdf'
 import { getReportDraftDetails } from '@/shared/repositories/report-draft-repository'
+import {
+  getReportDisplayTitle,
+  reportHasProductField,
+} from '@/shared/reports/report-display'
 import { useAuthStore } from '@/stores/auth.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
 import type { ReportDraft, ReportStatus } from '@/types/report'
@@ -84,20 +87,11 @@ async function downloadReportPdf(report: ReportDraft): Promise<void> {
       throw new Error('Отчет не найден на сервере')
     }
 
-    const pdfBlob = await generateQualityReportPdf(details.draft, details.photos)
-    const fileName = `${details.draft.mainInfo.orderNumber || details.draft.id}.pdf`
-    const document = await reportDraftStore.saveDocument(
-      details.draft.id,
-      pdfBlob,
-      fileName,
-      'application/pdf',
-    )
+    const document = await reportDraftStore.generateDocument(details.draft.id)
 
-    if (!document) {
-      return
+    if (document) {
+      downloadBlob(document.blob, document.fileName)
     }
-
-    downloadBlob(document.blob, document.fileName)
   } catch (error) {
     reportDraftStore.setError(error)
   } finally {
@@ -191,8 +185,10 @@ function downloadBlob(blob: Blob, fileName: string): void {
         <article v-for="report in filteredReports" :key="report.id" class="report-card">
           <div class="report-card__heading">
             <div>
-              <p class="report-card__eyebrow">Товар</p>
-              <h3>{{ report.productName || 'Товар не выбран' }}</h3>
+              <p class="report-card__eyebrow">
+                {{ reportHasProductField(report) && report.productId ? 'Товар' : 'Макет' }}
+              </p>
+              <h3>{{ getReportDisplayTitle(report) }}</h3>
             </div>
             <span class="report-status" :class="`report-status--${report.status}`">
               {{ getStatusLabel(report.status) }}

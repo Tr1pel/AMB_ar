@@ -66,8 +66,15 @@ export type DocumentTemplateFieldType =
   | 'text'
   | 'number'
   | 'date'
+  | 'time'
   | 'select'
+  | 'radio'
+  | 'checkbox'
   | 'textarea'
+  | 'measurement'
+  | 'passFail'
+  | 'table'
+  | 'calculated'
   | 'photo'
   | 'signature'
 
@@ -77,6 +84,30 @@ export interface DocumentTemplateFieldOption {
   id: string
   label: string
   sortOrder: number
+}
+
+export type DocumentTemplateTableColumnType = 'text' | 'number' | 'select' | 'checkbox'
+
+export interface DocumentTemplateTableColumn {
+  id: string
+  label: string
+  type: DocumentTemplateTableColumnType
+  unit?: string
+  options?: DocumentTemplateFieldOption[]
+}
+
+export interface DocumentTemplateTableRow {
+  id: string
+  label: string
+  helpText?: string
+}
+
+export type DocumentTemplateCalculationOperator = 'sum' | 'difference' | 'average'
+
+export interface DocumentTemplateCalculation {
+  operator: DocumentTemplateCalculationOperator
+  sourcePaths: string[]
+  precision?: number
 }
 
 export interface DocumentTemplateField {
@@ -90,6 +121,11 @@ export interface DocumentTemplateField {
   width: DocumentTemplateFieldWidth
   sortOrder: number
   options: DocumentTemplateFieldOption[]
+  unit?: string
+  standardValue?: string
+  tableColumns?: DocumentTemplateTableColumn[]
+  tableRows?: DocumentTemplateTableRow[]
+  calculation?: DocumentTemplateCalculation
 }
 
 export interface DocumentTemplateSection {
@@ -100,10 +136,55 @@ export interface DocumentTemplateSection {
   fields: DocumentTemplateField[]
 }
 
+export interface DocumentInputSchema {
+  version: 1
+  steps: DocumentTemplateSection[]
+}
+
+export type DocumentRenderMode = 'flow'
+export type DocumentRenderLayout = 'branded'
+
+export interface DocumentRenderFieldSpec {
+  dataPath: string
+  label?: string
+  width: DocumentTemplateFieldWidth
+  display: 'value' | 'checkmark' | 'table'
+  hideWhenEmpty: boolean
+  hidden?: boolean
+  page?: number
+  x?: number
+  y?: number
+  widthPoints?: number
+  heightPoints?: number
+}
+
+export interface DocumentRenderSectionSpec {
+  id: string
+  inputSectionId: string
+  title: string
+  pageBreakBefore: boolean
+  columns: 1 | 2
+  showDescription: boolean
+  hidden?: boolean
+  fields: DocumentRenderFieldSpec[]
+}
+
+export interface DocumentRenderSpec {
+  version: 1
+  mode: DocumentRenderMode
+  layout: DocumentRenderLayout
+  pageSize: 'A4'
+  documentTitle: string
+  sections: DocumentRenderSectionSpec[]
+}
+
 export interface DocumentTemplate extends SyncableEntity {
   name: string
   description: string
   status: DocumentTemplateStatus
+  inputSchema: DocumentInputSchema
+  renderSpec: DocumentRenderSpec
+  /** @deprecated Compatibility mirror for templates created before inputSchema. */
   sections: DocumentTemplateSection[]
   createdByAccountId: string
   createdAt: number
@@ -114,8 +195,21 @@ export interface DocumentTemplate extends SyncableEntity {
 export interface DocumentTemplateSnapshot {
   templateId: string
   name: string
+  inputSchema?: DocumentInputSchema
+  renderSpec?: DocumentRenderSpec
+  /** @deprecated Compatibility mirror for historical reports. */
   sections: DocumentTemplateSection[]
 }
+
+export type DocumentTemplateScalarValue = string | number | boolean
+export type DocumentTemplateTableValue = Record<
+  string,
+  Record<string, DocumentTemplateScalarValue>
+>
+export type DocumentTemplateFieldValue =
+  | DocumentTemplateScalarValue
+  | string[]
+  | DocumentTemplateTableValue
 
 export interface ReportMainInfo {
   orderNumber: string
@@ -182,6 +276,7 @@ export interface ReportSignatures {
 
 export interface ReportDraft extends SyncableEntity {
   status: ReportStatus
+  archivedFromStatus?: Exclude<ReportStatus, 'archived'>
   templateId?: string
   templateSnapshot?: DocumentTemplateSnapshot
   workerAccountId: string
@@ -193,7 +288,7 @@ export interface ReportDraft extends SyncableEntity {
   inspectionResults: ReportInspectionResults
   descriptions: ReportDescriptions
   expertConclusion: string
-  customFieldValues?: Record<string, string>
+  customFieldValues?: Record<string, DocumentTemplateFieldValue>
   sampling: ReportSampling
   signatures: ReportSignatures
   photoIds: string[]

@@ -13,7 +13,7 @@ test('worker submits a report and admin processes server-persisted binaries', as
   process.env.AMB_AR_DATABASE_PATH = databasePath
   process.env.AMB_AR_HOST = '127.0.0.1'
 
-  const { server, closeServer } = await import('./index.mjs')
+  const { server, closeServer, purgeExpiredArchivedReportsNow } = await import('./index.mjs')
 
   context.after(async () => {
     await closeServer()
@@ -41,9 +41,16 @@ test('worker submits a report and admin processes server-persisted binaries', as
     body: createTemplate(),
   })
   assert.equal(seedTemplate.status, 200)
+  assert.equal(seedTemplate.body.inputSchema.version, 1)
+  assert.equal(seedTemplate.body.renderSpec.pageSize, 'A4')
+  assert.equal(seedTemplate.body.renderSpec.layout, 'branded')
+  assert.equal(seedTemplate.body.renderSpec.sections[0].fields[0].label, 'Номер заказа')
 
   const reportId = 'report-flow'
-  const photoBytes = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x01, 0x02, 0x03, 0x04])
+  const photoBytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  )
   const photo = {
     id: 'photo-flow',
     draftId: reportId,
@@ -79,6 +86,9 @@ test('worker submits a report and admin processes server-persisted binaries', as
     savedDraft.body.draft.customFieldValues['custom.inspectorSignature'],
     worker.body.fullName,
   )
+  assert.deepEqual(savedDraft.body.draft.customFieldValues['custom.inspectionMatrix'], {
+    'row-temperature': { result: 6.2, accepted: true },
+  })
   assert.equal(savedDraft.body.photos[0].size, photoBytes.byteLength)
   assert.equal(savedDraft.body.photos[0].templateFieldId, 'field-photo')
   assert.equal(savedDraft.body.photos[1].templateFieldId, 'field-photo-secondary')
@@ -163,13 +173,13 @@ test('worker submits a report and admin processes server-persisted binaries', as
   })
   assert.equal(incompleteSubmission.status, 400)
 
-  const submitted = await request(port, `/api/reports/${reportId}`, {
+  const completedDraft = await request(port, `/api/reports/${reportId}`, {
     method: 'PUT',
     accountId: worker.body.id,
     body: {
       draft: {
         ...draft,
-        status: 'ready',
+        status: 'draft',
         mainInfo: {
           ...draft.mainInfo,
           orderNumber: 'ORDER-42',
@@ -179,8 +189,59 @@ test('worker submits a report and admin processes server-persisted binaries', as
       photos: [photo, secondaryPhoto],
     },
   })
+  assert.equal(completedDraft.status, 200)
+  assert.equal(completedDraft.body.draft.status, 'draft')
+
+  const submissionWithoutPreview = await request(port, `/api/reports/${reportId}/submit`, {
+    method: 'POST',
+    accountId: worker.body.id,
+  })
+  assert.equal(submissionWithoutPreview.status, 409)
+
+  const firstPreview = await request(port, `/api/reports/${reportId}/documents/generate`, {
+    method: 'POST',
+    accountId: worker.body.id,
+  })
+  assert.equal(firstPreview.status, 201)
+
+  const hiddenAfterPreview = await request(port, '/api/reports', { accountId: admin.body.id })
+  assert.deepEqual(hiddenAfterPreview.body, [])
+
+  const correctedDraft = await request(port, `/api/reports/${reportId}`, {
+    method: 'PUT',
+    accountId: worker.body.id,
+    body: {
+      draft: {
+        ...completedDraft.body.draft,
+        mainInfo: { ...completedDraft.body.draft.mainInfo, orderNumber: 'ORDER-42-CORRECTED' },
+      },
+      photos: [photo, secondaryPhoto],
+    },
+  })
+  assert.equal(correctedDraft.status, 200)
+  assert.deepEqual(correctedDraft.body.documents, [])
+
+  const secondPreview = await request(port, `/api/reports/${reportId}/documents/generate`, {
+    method: 'POST',
+    accountId: worker.body.id,
+  })
+  assert.equal(secondPreview.status, 201)
+  assert.notEqual(secondPreview.body.id, firstPreview.body.id)
+
+  const previewDetails = await request(port, `/api/reports/${reportId}`, {
+    accountId: worker.body.id,
+  })
+  assert.deepEqual(
+    previewDetails.body.documents.map((item) => item.id),
+    [secondPreview.body.id],
+  )
+
+  const submitted = await request(port, `/api/reports/${reportId}/submit`, {
+    method: 'POST',
+    accountId: worker.body.id,
+  })
   assert.equal(submitted.status, 200)
-  assert.equal(submitted.body.draft.status, 'ready')
+  assert.equal(submitted.body.draft.status, 'exported')
   assert.deepEqual(submitted.body.draft.photoIds, [photo.id, secondaryPhoto.id])
 
   const immutableSubmission = await request(port, `/api/reports/${reportId}`, {
@@ -198,13 +259,47 @@ test('worker submits a report and admin processes server-persisted binaries', as
 
   const adminReports = await request(port, '/api/reports', { accountId: admin.body.id })
   assert.equal(adminReports.status, 200)
-  assert.deepEqual(adminReports.body.map((item) => item.id), [reportId])
+  assert.deepEqual(
+    adminReports.body.map((item) => item.id),
+    [reportId],
+  )
 
   const adminDetails = await request(port, `/api/reports/${reportId}`, {
     accountId: admin.body.id,
   })
   assert.equal(adminDetails.status, 200)
   assert.equal(adminDetails.body.photos[0].blobBase64, photoBytes.toString('base64'))
+
+  const photoPreviews = await request(port, `/api/reports/${reportId}/photo-previews`, {
+    accountId: admin.body.id,
+  })
+  assert.equal(photoPreviews.status, 200)
+  assert.equal(photoPreviews.body.length, 2)
+  assert.equal(photoPreviews.body[0].id, photo.id)
+  assert.equal(photoPreviews.body[0].blobBase64, photoBytes.toString('base64'))
+
+  const generatedDocument = await request(port, `/api/reports/${reportId}/documents/generate`, {
+    method: 'POST',
+    accountId: admin.body.id,
+  })
+  assert.equal(generatedDocument.status, 201)
+  assert.equal(generatedDocument.body.draftId, reportId)
+  assert.equal(generatedDocument.body.mimeType, 'application/pdf')
+  const generatedDocumentBytes = Buffer.from(generatedDocument.body.blobBase64, 'base64')
+  assert.equal(generatedDocumentBytes.subarray(0, 5).toString('ascii'), '%PDF-')
+  assert.match(generatedDocumentBytes.toString('latin1'), /\/Font\s*<</)
+  assert.equal(
+    generatedDocument.body.contentHash,
+    createHash('sha256').update(generatedDocumentBytes).digest('hex'),
+  )
+  const generatedDetails = await request(port, `/api/reports/${reportId}`, {
+    accountId: admin.body.id,
+  })
+  assert.equal(generatedDetails.body.draft.status, 'exported')
+  assert.equal(
+    generatedDetails.body.documents.some((item) => item.id === generatedDocument.body.id),
+    true,
+  )
 
   const documentBytes = Buffer.from('%PDF-1.7\nAMB-AR integration test\n%%EOF', 'utf8')
   const document = await request(port, `/api/reports/${reportId}/documents`, {
@@ -222,17 +317,17 @@ test('worker submits a report and admin processes server-persisted binaries', as
   })
   assert.equal(document.status, 201)
   assert.equal(document.body.draftId, reportId)
-  assert.equal(
-    document.body.contentHash,
-    createHash('sha256').update(documentBytes).digest('hex'),
-  )
+  assert.equal(document.body.contentHash, createHash('sha256').update(documentBytes).digest('hex'))
   assert.notEqual(document.body.generatedAt, 1)
 
   const exportedDetails = await request(port, `/api/reports/${reportId}`, {
     accountId: admin.body.id,
   })
   assert.equal(exportedDetails.body.draft.status, 'exported')
-  assert.equal(exportedDetails.body.documents[0].blobBase64, documentBytes.toString('base64'))
+  assert.equal(
+    exportedDetails.body.documents.find((item) => item.id === document.body.id)?.blobBase64,
+    documentBytes.toString('base64'),
+  )
 
   const database = new DatabaseSync(databasePath, { readOnly: true })
   const photoRow = database
@@ -241,12 +336,26 @@ test('worker submits a report and admin processes server-persisted binaries', as
   const documentRow = database
     .prepare('SELECT binary_data, content_hash FROM generated_documents WHERE id = ?')
     .get(document.body.id)
+  const generatedDocumentRow = database
+    .prepare('SELECT binary_data, content_hash FROM generated_documents WHERE id = ?')
+    .get(generatedDocument.body.id)
+  const replacedPreviewRow = database
+    .prepare('SELECT deleted_at FROM generated_documents WHERE id = ?')
+    .get(firstPreview.body.id)
+  const templateRow = database
+    .prepare('SELECT input_schema_json, render_spec_json FROM document_templates WHERE id = ?')
+    .get('document-template-quality-standard')
 
   assert.deepEqual(Buffer.from(photoRow.binary_data), photoBytes)
   assert.equal(photoRow.size, photoBytes.byteLength)
   assert.equal(photoRow.template_field_id, 'field-photo')
   assert.deepEqual(Buffer.from(documentRow.binary_data), documentBytes)
   assert.equal(documentRow.content_hash, document.body.contentHash)
+  assert.deepEqual(Buffer.from(generatedDocumentRow.binary_data), generatedDocumentBytes)
+  assert.equal(generatedDocumentRow.content_hash, generatedDocument.body.contentHash)
+  assert.equal(replacedPreviewRow, undefined)
+  assert.equal(JSON.parse(templateRow.input_schema_json).steps[0].id, 'section-main')
+  assert.equal(JSON.parse(templateRow.render_spec_json).sections[0].columns, 2)
   database.close()
 
   const deleted = await request(port, `/api/reports/${reportId}`, {
@@ -258,14 +367,36 @@ test('worker submits a report and admin processes server-persisted binaries', as
   const deletedDetails = await request(port, `/api/reports/${reportId}`, {
     accountId: admin.body.id,
   })
-  assert.equal(deletedDetails.status, 404)
+  assert.equal(deletedDetails.status, 200)
+  assert.equal(deletedDetails.body.draft.status, 'archived')
+  assert.equal(deletedDetails.body.photos[0].blobBase64, photoBytes.toString('base64'))
+  assert.equal(
+    deletedDetails.body.documents.find((item) => item.id === document.body.id)?.blobBase64,
+    documentBytes.toString('base64'),
+  )
+
+  const workerArchivedDetails = await request(port, `/api/reports/${reportId}`, {
+    accountId: worker.body.id,
+  })
+  assert.equal(workerArchivedDetails.status, 404)
+
+  const archivedReports = await request(port, '/api/reports/archive', {
+    accountId: admin.body.id,
+  })
+  assert.equal(archivedReports.status, 200)
+  assert.deepEqual(
+    archivedReports.body.map((item) => item.id),
+    [reportId],
+  )
 
   const deletedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   const softDeletedReport = deletedDatabase
     .prepare('SELECT status, deleted_at FROM report_drafts WHERE id = ?')
     .get(reportId)
   const softDeletedPhoto = deletedDatabase
-    .prepare('SELECT deleted_at, length(binary_data) AS binary_size FROM product_photos WHERE id = ?')
+    .prepare(
+      'SELECT deleted_at, length(binary_data) AS binary_size FROM product_photos WHERE id = ?',
+    )
     .get(photo.id)
   const softDeletedDocument = deletedDatabase
     .prepare(
@@ -280,50 +411,380 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(typeof softDeletedPhoto.deleted_at, 'number')
   assert.equal(typeof softDeletedDocument.deleted_at, 'number')
   deletedDatabase.close()
+
+  const forbiddenRestore = await request(port, `/api/reports/archive/${reportId}`, {
+    method: 'POST',
+    accountId: worker.body.id,
+  })
+  assert.equal(forbiddenRestore.status, 403)
+
+  const restored = await request(port, `/api/reports/archive/${reportId}`, {
+    method: 'POST',
+    accountId: admin.body.id,
+  })
+  assert.equal(restored.status, 200)
+
+  const restoredDetails = await request(port, `/api/reports/${reportId}`, {
+    accountId: admin.body.id,
+  })
+  assert.equal(restoredDetails.status, 200)
+  assert.equal(restoredDetails.body.draft.status, 'exported')
+  assert.equal(restoredDetails.body.photos[0].blobBase64, photoBytes.toString('base64'))
+  assert.equal(
+    restoredDetails.body.documents.find((item) => item.id === document.body.id)?.blobBase64,
+    documentBytes.toString('base64'),
+  )
+
+  const restoredDatabase = new DatabaseSync(databasePath, { readOnly: true })
+  const restoredReport = restoredDatabase
+    .prepare('SELECT status, archived_from_status, deleted_at FROM report_drafts WHERE id = ?')
+    .get(reportId)
+  assert.equal(restoredReport.status, 'exported')
+  assert.equal(restoredReport.archived_from_status, null)
+  assert.equal(restoredReport.deleted_at, null)
+  assert.equal(
+    restoredDatabase.prepare('SELECT deleted_at FROM product_photos WHERE id = ?').get(photo.id)
+      .deleted_at,
+    null,
+  )
+  assert.equal(
+    restoredDatabase
+      .prepare('SELECT deleted_at FROM generated_documents WHERE id = ?')
+      .get(document.body.id).deleted_at,
+    null,
+  )
+  restoredDatabase.close()
+
+  const archiveAfterRestore = await request(port, '/api/reports/archive', {
+    accountId: admin.body.id,
+  })
+  assert.equal(
+    archiveAfterRestore.body.some((item) => item.id === reportId),
+    false,
+  )
+
+  const rearchived = await request(port, `/api/reports/${reportId}`, {
+    method: 'DELETE',
+    accountId: admin.body.id,
+  })
+  assert.equal(rearchived.status, 200)
+
+  const rearchivedDatabase = new DatabaseSync(databasePath, { readOnly: true })
+  const rearchivedReport = rearchivedDatabase
+    .prepare('SELECT status, archived_from_status, deleted_at FROM report_drafts WHERE id = ?')
+    .get(reportId)
+  assert.equal(rearchivedReport.status, 'archived')
+  assert.equal(rearchivedReport.archived_from_status, 'exported')
+  rearchivedDatabase.close()
+
+  assert.equal(
+    addCalendarMonth(Date.UTC(2026, 0, 31, 12, 30)),
+    Date.UTC(2026, 1, 28, 12, 30),
+  )
+  assert.equal(
+    addCalendarMonth(Date.UTC(2028, 0, 31, 12, 30)),
+    Date.UTC(2028, 1, 29, 12, 30),
+  )
+
+  const archiveDeletionAt = addCalendarMonth(rearchivedReport.deleted_at)
+  const purgedEarly = await purgeExpiredArchivedReportsNow(archiveDeletionAt - 1)
+  assert.equal(purgedEarly, 0)
+
+  const purgedAfterRetention = await purgeExpiredArchivedReportsNow(archiveDeletionAt)
+  assert.equal(purgedAfterRetention, 1)
+
+  const purgedDatabase = new DatabaseSync(databasePath, { readOnly: true })
+  assert.equal(
+    purgedDatabase.prepare('SELECT id FROM report_drafts WHERE id = ?').get(reportId),
+    undefined,
+  )
+  assert.equal(
+    purgedDatabase.prepare('SELECT id FROM product_photos WHERE draft_id = ?').get(reportId),
+    undefined,
+  )
+  assert.equal(
+    purgedDatabase.prepare('SELECT id FROM generated_documents WHERE draft_id = ?').get(reportId),
+    undefined,
+  )
+  purgedDatabase.close()
+
+  const archivedControlReport = await request(port, `/api/reports/${otherReportId}`, {
+    method: 'DELETE',
+    accountId: otherWorker.body.id,
+  })
+  assert.equal(archivedControlReport.status, 200)
+
+  const manuallyDeletedReportId = 'report-manual-archive-delete'
+  const manuallyDeletedPhoto = {
+    ...photo,
+    id: 'photo-manual-archive-delete',
+    draftId: manuallyDeletedReportId,
+  }
+  const manuallyDeletedDraft = createDraft(manuallyDeletedReportId, worker.body.id)
+  const savedForManualDeletion = await request(port, `/api/reports/${manuallyDeletedReportId}`, {
+    method: 'PUT',
+    accountId: worker.body.id,
+    body: {
+      draft: {
+        ...manuallyDeletedDraft,
+        status: 'ready',
+        mainInfo: {
+          ...manuallyDeletedDraft.mainInfo,
+          orderNumber: 'MANUAL-DELETE',
+          placeOfSurvey: 'Тестовый склад',
+        },
+      },
+      photos: [manuallyDeletedPhoto],
+    },
+  })
+  assert.equal(savedForManualDeletion.status, 200)
+
+  const archivedForManualDeletion = await request(port, `/api/reports/${manuallyDeletedReportId}`, {
+    method: 'DELETE',
+    accountId: admin.body.id,
+  })
+  assert.equal(archivedForManualDeletion.status, 200)
+
+  const permanentlyDeleted = await request(
+    port,
+    `/api/reports/archive/${manuallyDeletedReportId}`,
+    {
+      method: 'DELETE',
+      accountId: admin.body.id,
+    },
+  )
+  assert.equal(permanentlyDeleted.status, 200)
+
+  const afterManualDeletionDatabase = new DatabaseSync(databasePath, { readOnly: true })
+  assert.equal(
+    afterManualDeletionDatabase
+      .prepare('SELECT id FROM report_drafts WHERE id = ?')
+      .get(manuallyDeletedReportId),
+    undefined,
+  )
+  assert.equal(
+    afterManualDeletionDatabase
+      .prepare('SELECT id FROM product_photos WHERE draft_id = ?')
+      .get(manuallyDeletedReportId),
+    undefined,
+  )
+  afterManualDeletionDatabase.close()
+
+  const archiveAfterManualDeletion = await request(port, '/api/reports/archive', {
+    accountId: admin.body.id,
+  })
+  assert.deepEqual(
+    archiveAfterManualDeletion.body.map((item) => item.id),
+    [otherReportId],
+  )
+
+  const photoOnlyTemplate = createPhotoOnlyTemplate()
+  const savedPhotoOnlyTemplate = await request(
+    port,
+    `/api/document-templates/${photoOnlyTemplate.id}`,
+    {
+      method: 'PUT',
+      accountId: admin.body.id,
+      body: photoOnlyTemplate,
+    },
+  )
+  assert.equal(savedPhotoOnlyTemplate.status, 201)
+
+  const photoOnlyReportId = 'report-photo-only'
+  const photoOnlyPhoto = {
+    ...photo,
+    id: 'photo-only-photo',
+    draftId: photoOnlyReportId,
+    templateFieldId: 'photo-only-field',
+  }
+  const photoOnlyDraft = createDraft(photoOnlyReportId, worker.body.id)
+  const savedPhotoOnlyReport = await request(port, `/api/reports/${photoOnlyReportId}`, {
+    method: 'PUT',
+    accountId: worker.body.id,
+    body: {
+      draft: { ...photoOnlyDraft, templateId: photoOnlyTemplate.id },
+      photos: [photoOnlyPhoto],
+    },
+  })
+  assert.equal(savedPhotoOnlyReport.status, 200)
+  assert.equal(savedPhotoOnlyReport.body.draft.productId, '')
+  assert.equal(savedPhotoOnlyReport.body.draft.productName, photoOnlyTemplate.name)
+  assert.equal(savedPhotoOnlyReport.body.draft.mainInfo.productName, photoOnlyTemplate.name)
+
+  const photoOnlyPdf = await request(
+    port,
+    `/api/reports/${photoOnlyReportId}/documents/generate`,
+    {
+      method: 'POST',
+      accountId: worker.body.id,
+    },
+  )
+  assert.equal(photoOnlyPdf.status, 201)
+
+  const deletedPhotoOnlyDraft = await request(port, `/api/reports/${photoOnlyReportId}`, {
+    method: 'DELETE',
+    accountId: worker.body.id,
+  })
+  assert.equal(deletedPhotoOnlyDraft.status, 200)
+
+  const deletedActiveTemplate = await request(
+    port,
+    '/api/document-templates/document-template-quality-standard',
+    {
+      method: 'DELETE',
+      accountId: admin.body.id,
+    },
+  )
+  assert.equal(deletedActiveTemplate.status, 200)
+
+  const deletedActiveTemplateDetails = await request(
+    port,
+    '/api/document-templates/document-template-quality-standard',
+    { accountId: admin.body.id },
+  )
+  assert.equal(deletedActiveTemplateDetails.status, 404)
 })
 
 function createTemplate() {
   const now = Date.now()
+  const sections = [
+    {
+      id: 'section-main',
+      title: 'Основное',
+      description: '',
+      sortOrder: 1,
+      fields: [
+        createTemplateField('field-order', 'mainInfo.orderNumber', 'Номер заказа', 1),
+        createTemplateField('field-place', 'mainInfo.placeOfSurvey', 'Место инспекции', 2),
+        createTemplateField('field-product', 'mainInfo.productName', 'Товар', 3),
+        createTemplateField('field-photo', 'photos', 'Фотографии', 4),
+        createTemplateField(
+          'field-photo-secondary',
+          'custom.secondaryPhotos',
+          'Дополнительные фотографии',
+          5,
+          'photo',
+          false,
+        ),
+        createTemplateField(
+          'field-inspector-signature',
+          'custom.inspectorSignature',
+          'Подпись инспектора',
+          6,
+          'signature',
+          true,
+        ),
+        {
+          ...createTemplateField(
+            'field-inspection-matrix',
+            'custom.inspectionMatrix',
+            'Измерения',
+            7,
+            'table',
+            false,
+          ),
+          tableColumns: [
+            { id: 'result', label: 'Результат', type: 'number' },
+            { id: 'accepted', label: 'Принято', type: 'checkbox' },
+          ],
+          tableRows: [{ id: 'row-temperature', label: 'Температура' }],
+        },
+      ],
+    },
+  ]
 
   return {
     id: 'document-template-quality-standard',
     name: 'Стандартный отчет ОКК',
     description: 'Интеграционный макет',
     status: 'active',
-    sections: [
-      {
-        id: 'section-main',
-        title: 'Основное',
-        description: '',
-        sortOrder: 1,
-        fields: [
-          createTemplateField('field-order', 'mainInfo.orderNumber', 'Номер заказа', 1),
-          createTemplateField('field-place', 'mainInfo.placeOfSurvey', 'Место инспекции', 2),
-          createTemplateField('field-product', 'mainInfo.productName', 'Товар', 3),
-          createTemplateField('field-photo', 'photos', 'Фотографии', 4),
-          createTemplateField(
-            'field-photo-secondary',
-            'custom.secondaryPhotos',
-            'Дополнительные фотографии',
-            5,
-            'photo',
-            false,
-          ),
-          createTemplateField(
-            'field-inspector-signature',
-            'custom.inspectorSignature',
-            'Подпись инспектора',
-            6,
-            'signature',
-            true,
-          ),
-        ],
-      },
-    ],
+    inputSchema: { version: 1, steps: sections },
+    renderSpec: {
+      version: 1,
+      mode: 'flow',
+      layout: 'branded',
+      pageSize: 'A4',
+      documentTitle: 'Интеграционный отчёт',
+      sections: [
+        {
+          id: 'render-section-main',
+          inputSectionId: 'section-main',
+          title: 'Основное',
+          pageBreakBefore: false,
+          columns: 2,
+          showDescription: true,
+          hidden: false,
+          fields: sections[0].fields.map((field) => ({
+            dataPath: field.dataPath,
+            label: field.label,
+            width: field.width,
+            display: field.type === 'table' ? 'table' : 'value',
+            hideWhenEmpty: false,
+            hidden: false,
+          })),
+        },
+      ],
+    },
+    sections,
     createdByAccountId: 'system',
     createdAt: now,
     updatedAt: now,
     publishedAt: now,
+  }
+}
+
+function createPhotoOnlyTemplate() {
+  const template = createTemplate()
+  const photoField = createTemplateField(
+    'photo-only-field',
+    'photos',
+    'Фотография',
+    1,
+    'photo',
+    true,
+  )
+  const sections = [
+    {
+      id: 'photo-only-section',
+      title: 'Фото',
+      description: '',
+      sortOrder: 1,
+      fields: [photoField],
+    },
+  ]
+
+  return {
+    ...template,
+    id: 'document-template-photo-only',
+    name: 'Фотоотчёт',
+    createdByAccountId: 'account-admin',
+    inputSchema: { version: 1, steps: sections },
+    sections,
+    renderSpec: {
+      ...template.renderSpec,
+      documentTitle: 'Фотоотчёт',
+      sections: [
+        {
+          id: 'photo-only-render-section',
+          inputSectionId: 'photo-only-section',
+          title: 'Фото',
+          pageBreakBefore: false,
+          columns: 1,
+          showDescription: false,
+          hidden: false,
+          fields: [
+            {
+              dataPath: 'photos',
+              label: 'Фотография',
+              width: 'full',
+              display: 'value',
+              hideWhenEmpty: false,
+              hidden: false,
+            },
+          ],
+        },
+      ],
+    },
   }
 }
 
@@ -367,7 +828,12 @@ function createDraft(id, workerAccountId) {
     inspectionResults: {},
     descriptions: {},
     expertConclusion: '',
-    customFieldValues: { 'custom.inspectorSignature': 'Подставное имя' },
+    customFieldValues: {
+      'custom.inspectorSignature': 'Подставное имя',
+      'custom.inspectionMatrix': {
+        'row-temperature': { result: 6.2, accepted: true },
+      },
+    },
     sampling: { palletCount: 1, sampleCount: 1, seed: '42', points: [] },
     signatures: {},
     photoIds: ['untrusted-photo-id'],
@@ -419,4 +885,18 @@ async function waitForServer(server) {
   }
 
   throw new Error('Server did not start in time')
+}
+
+function addCalendarMonth(timestamp) {
+  const date = new Date(timestamp)
+  const originalDay = date.getUTCDate()
+
+  date.setUTCDate(1)
+  date.setUTCMonth(date.getUTCMonth() + 1)
+  const lastDayOfTargetMonth = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0),
+  ).getUTCDate()
+  date.setUTCDate(Math.min(originalDay, lastDayOfTargetMonth))
+
+  return date.getTime()
 }

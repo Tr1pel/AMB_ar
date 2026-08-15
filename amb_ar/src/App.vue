@@ -5,7 +5,7 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.store'
 
 interface NavigationItem {
-  id: 'reports' | 'report-action' | 'templates' | 'accounts'
+  id: 'reports' | 'archive' | 'report-action' | 'templates' | 'accounts'
   to: string
   label: string
   shortLabel: string
@@ -35,6 +35,14 @@ const navItems = computed<NavigationItem[]>(() => {
         to: '/admin/reports',
         label: 'Журнал отчетов',
         shortLabel: 'Отчеты',
+        icon: '/icons/admin-reports.svg',
+        iconType: 'svg',
+      },
+      {
+        id: 'archive',
+        to: '/admin/reports/archive',
+        label: 'Архив отчетов',
+        shortLabel: 'Архив',
         icon: '/icons/admin-reports.svg',
         iconType: 'svg',
       },
@@ -81,8 +89,22 @@ onMounted(() => {
 })
 
 function isNavItemActive(path: string): boolean {
-  if (path === '/reports/history' || path === '/admin/reports') {
+  if (path === '/reports/history') {
     return route.path === path || route.name === 'report-details' || route.name === 'edit-report'
+  }
+
+  if (path === '/admin/reports') {
+    return (
+      route.name === 'admin-reports' ||
+      (route.name === 'report-details' && route.query.from !== 'archive')
+    )
+  }
+
+  if (path === '/admin/reports/archive') {
+    return (
+      route.name === 'admin-report-archive' ||
+      (route.name === 'report-details' && route.query.from === 'archive')
+    )
   }
 
   return route.path.startsWith(path)
@@ -589,7 +611,6 @@ function signOut(): void {
   .mobile-account__logout {
     padding-inline: 8px;
   }
-
 }
 
 @media print {

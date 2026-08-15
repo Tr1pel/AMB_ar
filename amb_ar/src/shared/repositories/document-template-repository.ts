@@ -1,13 +1,29 @@
 import { apiDelete, apiGet, apiPost, apiPut } from '@/shared/api/server-api'
-import { DEFAULT_DOCUMENT_TEMPLATE_SECTIONS } from '@/shared/constants/document-template'
+import {
+  BELL_PEPPER_DOCUMENT_TEMPLATE_ID,
+  BELL_PEPPER_DOCUMENT_TEMPLATE_SECTIONS,
+  DEFAULT_DOCUMENT_TEMPLATE_SECTIONS,
+} from '@/shared/constants/document-template'
 import { createEntityId, createSyncMetadata } from '@/shared/sync/sync-metadata'
-import type { DocumentTemplate, DocumentTemplateSection } from '@/types/report'
+import {
+  createDefaultRenderSpec,
+  createInputSchema,
+  getTemplateInputSections,
+  syncRenderSpec,
+} from '@/shared/templates/document-template-schema'
+import type {
+  DocumentInputSchema,
+  DocumentRenderSpec,
+  DocumentTemplate,
+  DocumentTemplateSection,
+} from '@/types/report'
 
 export interface SaveDocumentTemplateInput {
   id: string
   name: string
   description: string
-  sections: DocumentTemplateSection[]
+  inputSchema: DocumentInputSchema
+  renderSpec: DocumentRenderSpec
 }
 
 const SEED_TEMPLATE_ID = 'document-template-quality-standard'
@@ -15,25 +31,43 @@ const SEED_TEMPLATE_ID = 'document-template-quality-standard'
 export class DocumentTemplateRepository {
   async ensureSeed(): Promise<void> {
     const templates = await this.list()
-
-    if (templates.length) {
-      return
-    }
-
     const now = Date.now()
+    const seeds = [
+      {
+        id: SEED_TEMPLATE_ID,
+        name: 'Стандартный отчет ОКК',
+        description: 'Базовый макет отчета по инспекции качества.',
+        sections: DEFAULT_DOCUMENT_TEMPLATE_SECTIONS,
+      },
+      {
+        id: BELL_PEPPER_DOCUMENT_TEMPLATE_ID,
+        name: 'Инспекция качества болгарского перца',
+        description: 'Пошаговый макет по форме QC-RPS-003: температура, качество, упаковка, решение и фотографии.',
+        sections: BELL_PEPPER_DOCUMENT_TEMPLATE_SECTIONS,
+      },
+    ]
 
-    await apiPost<DocumentTemplate>('/api/document-templates/seed', {
-      id: SEED_TEMPLATE_ID,
-      name: 'Стандартный отчет ОКК',
-      description: 'Базовый макет отчета по инспекции качества.',
-      status: 'active',
-      sections: structuredClone(DEFAULT_DOCUMENT_TEMPLATE_SECTIONS),
-      createdByAccountId: 'system',
-      createdAt: now,
-      updatedAt: now,
-      publishedAt: now,
-      ...createSyncMetadata('synced'),
-    })
+    for (const seed of seeds) {
+      if (templates.some((template) => template.id === seed.id && !template._deletedAt)) {
+        continue
+      }
+
+      const sections = structuredClone(seed.sections)
+      await apiPost<DocumentTemplate>('/api/document-templates/seed', {
+        id: seed.id,
+        name: seed.name,
+        description: seed.description,
+        status: 'active',
+        inputSchema: createInputSchema(sections),
+        renderSpec: createDefaultRenderSpec(sections, seed.name),
+        sections,
+        createdByAccountId: 'system',
+        createdAt: now,
+        updatedAt: now,
+        publishedAt: now,
+        ...createSyncMetadata('synced'),
+      })
+    }
   }
 
   async list(): Promise<DocumentTemplate[]> {
@@ -68,20 +102,23 @@ export class DocumentTemplateRepository {
 
   async createEmpty(adminAccountId: string): Promise<DocumentTemplate> {
     const now = Date.now()
+    const sections: DocumentTemplateSection[] = [
+      {
+        id: createEntityId('template-section'),
+        title: 'Новый раздел',
+        description: '',
+        sortOrder: 1,
+        fields: [],
+      },
+    ]
     const template: DocumentTemplate = {
       id: createEntityId('document-template'),
       name: 'Новый макет',
       description: '',
       status: 'draft',
-      sections: [
-        {
-          id: createEntityId('template-section'),
-          title: 'Новый раздел',
-          description: '',
-          sortOrder: 1,
-          fields: [],
-        },
-      ],
+      inputSchema: createInputSchema(sections),
+      renderSpec: createDefaultRenderSpec(sections, 'Новый макет'),
+      sections,
       createdByAccountId: adminAccountId,
       createdAt: now,
       updatedAt: now,
@@ -110,20 +147,32 @@ export class DocumentTemplateRepository {
       throw new Error('Введите название макета')
     }
 
-    if (!input.sections.length) {
+    if (!input.inputSchema.steps.length) {
       throw new Error('Добавьте хотя бы один раздел')
     }
 
-    return apiPut<DocumentTemplate>(
+    const sections = normalizeSections(input.inputSchema.steps)
+    const renderSpec = syncRenderSpec(input.renderSpec, sections, name)
+    const savedTemplate = await apiPut<DocumentTemplate>(
       `/api/document-templates/${encodeURIComponent(input.id)}`,
       {
         ...existingTemplate,
         name,
         description: input.description.trim(),
-        sections: normalizeSections(input.sections),
+        inputSchema: createInputSchema(sections),
+        renderSpec,
+        sections,
       },
       adminAccountId,
     )
+
+    if (savedTemplate.renderSpec?.layout !== renderSpec.layout) {
+      throw new Error(
+        'Сервер не подтвердил сохранение стиля PDF. Перезапустите сервер приложения и повторите сохранение.',
+      )
+    }
+
+    return savedTemplate
   }
 
   async duplicate(templateId: string, adminAccountId: string): Promise<DocumentTemplate> {
@@ -134,12 +183,40 @@ export class DocumentTemplateRepository {
     }
 
     const now = Date.now()
+    const sourceSections = getTemplateInputSections(sourceTemplate)
+    const duplicateSections = regenerateNodeIds(sourceSections)
+    const duplicateSectionIdBySourceId = new Map(
+      sourceSections.map((section, index) => [section.id, duplicateSections[index]?.id]),
+    )
+    const remappedRenderSpec: DocumentRenderSpec = {
+      ...structuredClone(sourceTemplate.renderSpec),
+      documentTitle: `${sourceTemplate.name} — копия`,
+      sections: sourceTemplate.renderSpec.sections.flatMap((section) => {
+        const duplicateSectionId = duplicateSectionIdBySourceId.get(section.inputSectionId)
+
+        return duplicateSectionId
+          ? [
+              {
+                ...structuredClone(section),
+                id: `render-${duplicateSectionId}`,
+                inputSectionId: duplicateSectionId,
+              },
+            ]
+          : []
+      }),
+    }
     const duplicate: DocumentTemplate = {
       ...structuredClone(sourceTemplate),
       id: createEntityId('document-template'),
       name: `${sourceTemplate.name} — копия`,
       status: 'draft',
-      sections: regenerateNodeIds(sourceTemplate.sections),
+      inputSchema: createInputSchema(duplicateSections),
+      renderSpec: syncRenderSpec(
+        remappedRenderSpec,
+        duplicateSections,
+        `${sourceTemplate.name} — копия`,
+      ),
+      sections: duplicateSections,
       createdByAccountId: adminAccountId,
       createdAt: now,
       updatedAt: now,
@@ -162,7 +239,7 @@ export class DocumentTemplateRepository {
       throw new Error('Макет не найден')
     }
 
-    if (!template.sections.some((section) => section.fields.length > 0)) {
+    if (!getTemplateInputSections(template).some((section) => section.fields.length > 0)) {
       throw new Error('Добавьте в макет хотя бы одно поле')
     }
 

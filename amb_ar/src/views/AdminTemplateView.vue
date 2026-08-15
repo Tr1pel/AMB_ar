@@ -1,50 +1,46 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import {
   DOCUMENT_TEMPLATE_FIELD_CATALOG,
   type DocumentTemplateFieldCatalogItem,
 } from '@/shared/constants/document-template'
-import { REPORT_TEMPLATE_FIELD_LABELS } from '@/shared/constants/report-template-options'
+import {
+  createDefaultRenderSpec,
+  createInputSchema,
+  getTemplateInputSections,
+  getTemplateRenderSpec,
+  syncRenderSpec,
+} from '@/shared/templates/document-template-schema'
 import { useDocumentTemplateStore } from '@/stores/document-template.store'
-import { useReportTemplateStore } from '@/stores/report-template.store'
 import type {
   DocumentTemplate,
   DocumentTemplateField,
   DocumentTemplateFieldOption,
+  DocumentTemplateTableColumn,
   DocumentTemplateFieldType,
+  DocumentRenderFieldSpec,
+  DocumentRenderSectionSpec,
   DocumentTemplateSection,
-  ReportTemplateField,
-  ReportTemplateOption,
 } from '@/types/report'
 
-type WorkspaceTab = 'templates' | 'reference'
+type TemplateEditorMode = 'input' | 'render'
 
 const documentTemplateStore = useDocumentTemplateStore()
-const reportTemplateStore = useReportTemplateStore()
 
-const activeWorkspaceTab = ref<WorkspaceTab>('templates')
+const editorMode = ref<TemplateEditorMode>('input')
 const editorTemplate = ref<DocumentTemplate | null>(null)
 const selectedSectionId = ref<string | null>(null)
 const selectedFieldId = ref<string | null>(null)
+const expandedRenderSectionId = ref<string | null>(null)
 const fieldCatalogSelection = ref('')
 const editorNotice = ref('')
 const catalogNotice = ref('')
 
-const referenceFields = Object.entries(REPORT_TEMPLATE_FIELD_LABELS).map(([value, label]) => ({
-  value: value as ReportTemplateField,
-  label,
-}))
-const selectedReferenceField = ref<ReportTemplateField>('productId')
-const editingOptionId = ref<string | null>(null)
-const optionForm = reactive({
-  label: '',
-  value: '',
-  category: '',
-})
 const listOptionForm = reactive({
   label: '',
 })
+const tableOptionLabels = reactive<Record<string, string>>({})
 
 const selectedSection = computed(() =>
   editorTemplate.value?.sections.find((section) => section.id === selectedSectionId.value),
@@ -52,6 +48,26 @@ const selectedSection = computed(() =>
 const selectedTemplateField = computed(() =>
   selectedSection.value?.fields.find((field) => field.id === selectedFieldId.value),
 )
+const calculationSourceFields = computed(() => {
+  const selectedField = selectedTemplateField.value
+
+  if (!selectedField || !editorTemplate.value) {
+    return []
+  }
+
+  return editorTemplate.value.sections.flatMap((section) =>
+    section.fields.filter(
+      (field) =>
+        field.dataPath !== selectedField.dataPath &&
+        (field.type === 'number' || field.type === 'measurement'),
+    ),
+  )
+})
+const unusedCalculationSourceFields = computed(() => {
+  const sourcePaths = selectedTemplateField.value?.calculation?.sourcePaths ?? []
+
+  return calculationSourceFields.value.filter((field) => !sourcePaths.includes(field.dataPath))
+})
 const sortedSections = computed(() =>
   [...(editorTemplate.value?.sections ?? [])].sort(
     (firstSection, secondSection) => firstSection.sortOrder - secondSection.sortOrder,
@@ -77,33 +93,48 @@ const catalogGroups = computed(() =>
 )
 const totalFieldCount = computed(
   () =>
-    editorTemplate.value?.sections.reduce(
-      (total, section) => total + section.fields.length,
-      0,
-    ) ?? 0,
-)
-const selectedReferenceFieldLabel = computed(
-  () => REPORT_TEMPLATE_FIELD_LABELS[selectedReferenceField.value],
-)
-const selectedOptions = computed(() =>
-  reportTemplateStore.getOptionsByField(selectedReferenceField.value),
+    editorTemplate.value?.sections.reduce((total, section) => total + section.fields.length, 0) ??
+    0,
 )
 
 const fieldTypeOptions: Array<{ value: DocumentTemplateFieldType; label: string }> = [
   { value: 'text', label: 'Текст' },
   { value: 'number', label: 'Число' },
   { value: 'date', label: 'Дата' },
+  { value: 'time', label: 'Время' },
   { value: 'select', label: 'Список' },
+  { value: 'radio', label: 'Один вариант' },
+  { value: 'checkbox', label: 'Флажок' },
   { value: 'textarea', label: 'Большой текст' },
+  { value: 'measurement', label: 'Измерение' },
+  { value: 'passFail', label: 'Соответствует / не соответствует' },
+  { value: 'table', label: 'Таблица проверок' },
+  { value: 'calculated', label: 'Вычисляемое значение' },
   { value: 'photo', label: 'Фото' },
   { value: 'signature', label: 'Подпись' },
 ]
 
 onMounted(() => {
-  void Promise.all([
-    documentTemplateStore.loadTemplates(),
-    reportTemplateStore.loadOptions(),
-  ])
+  void documentTemplateStore.loadTemplates()
+})
+
+watch(editorMode, (mode) => {
+  if (mode !== 'render' || !editorTemplate.value) {
+    return
+  }
+
+  editorTemplate.value.renderSpec = syncRenderSpec(
+    editorTemplate.value.renderSpec,
+    editorTemplate.value.sections,
+    editorTemplate.value.name,
+  )
+  if (
+    !editorTemplate.value.renderSpec.sections.some(
+      (section) => section.id === expandedRenderSectionId.value,
+    )
+  ) {
+    expandedRenderSectionId.value = null
+  }
 })
 
 async function createTemplate(): Promise<void> {
@@ -131,7 +162,12 @@ async function editTemplate(template: DocumentTemplate): Promise<void> {
 
 function openDraftInEditor(template: DocumentTemplate): void {
   catalogNotice.value = ''
-  editorTemplate.value = structuredClone(template)
+  const editableTemplate = structuredClone(template)
+  const sections = getTemplateInputSections(editableTemplate)
+  editableTemplate.inputSchema = createInputSchema(sections)
+  editableTemplate.sections = editableTemplate.inputSchema.steps
+  editableTemplate.renderSpec = getTemplateRenderSpec(editableTemplate)
+  editorTemplate.value = editableTemplate
   editorTemplate.value.sections.forEach((section) => {
     section.fields.forEach((field) => {
       field.options ??= []
@@ -139,13 +175,16 @@ function openDraftInEditor(template: DocumentTemplate): void {
   })
   selectedSectionId.value = editorTemplate.value.sections[0]?.id ?? null
   selectedFieldId.value = null
+  expandedRenderSectionId.value = null
   fieldCatalogSelection.value = ''
+  editorMode.value = 'input'
 }
 
 function closeEditor(): void {
   editorTemplate.value = null
   selectedSectionId.value = null
   selectedFieldId.value = null
+  expandedRenderSectionId.value = null
   editorNotice.value = ''
 }
 
@@ -160,7 +199,12 @@ async function saveTemplate(): Promise<DocumentTemplate | null> {
     id: editorTemplate.value.id,
     name: editorTemplate.value.name,
     description: editorTemplate.value.description,
-    sections: editorTemplate.value.sections,
+    inputSchema: createInputSchema(editorTemplate.value.sections),
+    renderSpec: syncRenderSpec(
+      editorTemplate.value.renderSpec,
+      editorTemplate.value.sections,
+      editorTemplate.value.name,
+    ),
   })
 
   if (savedTemplate) {
@@ -216,7 +260,7 @@ async function duplicateTemplate(template: DocumentTemplate): Promise<void> {
 
 async function deleteTemplate(template: DocumentTemplate): Promise<void> {
   const shouldDelete = window.confirm(
-    `Удалить макет «${template.name}»? Готовые отчеты сохранят использованную структуру.`,
+    `Удалить макет «${template.name}»?\n\nОн исчезнет из списка и больше не будет доступен инспекторам для новых отчетов. Уже созданные отчеты сохранят использованную структуру. Это действие нельзя отменить.`,
   )
 
   if (!shouldDelete) {
@@ -225,8 +269,12 @@ async function deleteTemplate(template: DocumentTemplate): Promise<void> {
 
   const deleted = await documentTemplateStore.deleteTemplate(template.id)
 
-  if (deleted && editorTemplate.value?.id === template.id) {
-    closeEditor()
+  if (deleted) {
+    if (editorTemplate.value?.id === template.id) {
+      closeEditor()
+    }
+
+    catalogNotice.value = `Макет «${template.name}» удален.`
   }
 }
 
@@ -259,16 +307,13 @@ function removeSection(section: DocumentTemplateSection): void {
   }
 
   const shouldDelete =
-    !section.fields.length ||
-    window.confirm(`Удалить раздел «${section.title}» и все его поля?`)
+    !section.fields.length || window.confirm(`Удалить раздел «${section.title}» и все его поля?`)
 
   if (!shouldDelete) {
     return
   }
 
-  const sectionIndex = editorTemplate.value.sections.findIndex(
-    (item) => item.id === section.id,
-  )
+  const sectionIndex = editorTemplate.value.sections.findIndex((item) => item.id === section.id)
 
   editorTemplate.value.sections.splice(sectionIndex, 1)
   normalizeSectionOrder()
@@ -348,9 +393,62 @@ function selectTemplateField(sectionId: string, fieldId: string): void {
 
   if (field) {
     field.options ??= []
+
+    if (field.type === 'calculated') {
+      ensureCalculation(field)
+    }
   }
 
   listOptionForm.label = ''
+}
+
+function handleFieldTypeChange(field: DocumentTemplateField): void {
+  if (field.type === 'calculated') {
+    ensureCalculation(field)
+    return
+  }
+
+  field.calculation = undefined
+}
+
+function ensureCalculation(field: DocumentTemplateField): void {
+  if (field.calculation) {
+    return
+  }
+
+  const firstSource = editorTemplate.value?.sections
+    .flatMap((section) => section.fields)
+    .find(
+      (candidate) =>
+        candidate.dataPath !== field.dataPath &&
+        (candidate.type === 'number' || candidate.type === 'measurement'),
+    )
+
+  field.calculation = {
+    operator: 'sum',
+    sourcePaths: firstSource ? [firstSource.dataPath] : [],
+    precision: 2,
+  }
+}
+
+function addCalculationSource(field: DocumentTemplateField, dataPath: string): void {
+  if (!dataPath) {
+    return
+  }
+
+  ensureCalculation(field)
+
+  if (!field.calculation!.sourcePaths.includes(dataPath)) {
+    field.calculation!.sourcePaths.push(dataPath)
+  }
+}
+
+function removeCalculationSource(field: DocumentTemplateField, dataPath: string): void {
+  if (!field.calculation) {
+    return
+  }
+
+  field.calculation.sourcePaths = field.calculation.sourcePaths.filter((path) => path !== dataPath)
 }
 
 function removeField(fieldId: string): void {
@@ -405,11 +503,93 @@ function normalizeFieldOrder(section: DocumentTemplateSection): void {
   })
 }
 
+function getRenderInputSection(
+  renderSection: DocumentRenderSectionSpec,
+): DocumentTemplateSection | undefined {
+  return editorTemplate.value?.sections.find(
+    (section) => section.id === renderSection.inputSectionId,
+  )
+}
+
+function getRenderInputField(
+  renderSection: DocumentRenderSectionSpec,
+  renderField: DocumentRenderFieldSpec,
+): DocumentTemplateField | undefined {
+  return getRenderInputSection(renderSection)?.fields.find(
+    (field) => field.dataPath === renderField.dataPath,
+  )
+}
+
+function moveRenderSection(renderSectionId: string, direction: -1 | 1): void {
+  const renderSections = editorTemplate.value?.renderSpec.sections
+
+  if (!renderSections) {
+    return
+  }
+
+  const sectionIndex = renderSections.findIndex((section) => section.id === renderSectionId)
+  const targetIndex = sectionIndex + direction
+
+  if (sectionIndex < 0 || targetIndex < 0 || targetIndex >= renderSections.length) {
+    return
+  }
+
+  const [section] = renderSections.splice(sectionIndex, 1)
+
+  if (section) {
+    renderSections.splice(targetIndex, 0, section)
+  }
+}
+
+function moveRenderField(
+  renderSection: DocumentRenderSectionSpec,
+  dataPath: string,
+  direction: -1 | 1,
+): void {
+  const fieldIndex = renderSection.fields.findIndex((field) => field.dataPath === dataPath)
+  const targetIndex = fieldIndex + direction
+
+  if (fieldIndex < 0 || targetIndex < 0 || targetIndex >= renderSection.fields.length) {
+    return
+  }
+
+  const [field] = renderSection.fields.splice(fieldIndex, 1)
+
+  if (field) {
+    renderSection.fields.splice(targetIndex, 0, field)
+  }
+}
+
+function toggleRenderSection(renderSectionId: string): void {
+  expandedRenderSectionId.value =
+    expandedRenderSectionId.value === renderSectionId ? null : renderSectionId
+}
+
+function getVisibleRenderFieldCount(renderSection: DocumentRenderSectionSpec): number {
+  return renderSection.fields.filter((field) => !field.hidden).length
+}
+
+function resetRenderSpec(): void {
+  const template = editorTemplate.value
+
+  if (
+    !template ||
+    !window.confirm('Сбросить порядок и настройки печатных полей по структуре мобильной формы?')
+  ) {
+    return
+  }
+
+  template.renderSpec = createDefaultRenderSpec(
+    template.sections,
+    template.renderSpec.documentTitle || template.name,
+  )
+}
+
 function addListOption(): void {
   const field = selectedTemplateField.value
   const label = listOptionForm.label.trim()
 
-  if (!field || field.type !== 'select' || !label) {
+  if (!field || !['select', 'radio', 'passFail'].includes(field.type) || !label) {
     return
   }
 
@@ -464,6 +644,74 @@ function normalizeListOptionOrder(field: DocumentTemplateField): void {
   })
 }
 
+function addTableColumn(): void {
+  const field = selectedTemplateField.value
+
+  if (!field || field.type !== 'table') {
+    return
+  }
+
+  field.tableColumns ??= []
+  field.tableColumns.push({
+    id: createLocalId('table-column'),
+    label: `Колонка ${field.tableColumns.length + 1}`,
+    type: 'text',
+  })
+}
+
+function addTableColumnOption(column: DocumentTemplateTableColumn): void {
+  const label = tableOptionLabels[column.id]?.trim()
+
+  if (!label) {
+    return
+  }
+
+  column.options ??= []
+  column.options.push({
+    id: createLocalId('table-column-option'),
+    label,
+    sortOrder: column.options.length + 1,
+  })
+  tableOptionLabels[column.id] = ''
+}
+
+function removeTableColumnOption(column: DocumentTemplateTableColumn, optionId: string): void {
+  column.options = (column.options ?? []).filter((option) => option.id !== optionId)
+  column.options.forEach((option, index) => {
+    option.sortOrder = index + 1
+  })
+}
+
+function removeTableColumn(columnId: string): void {
+  const field = selectedTemplateField.value
+
+  if (field) {
+    field.tableColumns = (field.tableColumns ?? []).filter((column) => column.id !== columnId)
+  }
+}
+
+function addTableRow(): void {
+  const field = selectedTemplateField.value
+
+  if (!field || field.type !== 'table') {
+    return
+  }
+
+  field.tableRows ??= []
+  field.tableRows.push({
+    id: createLocalId('table-row'),
+    label: `Проверка ${field.tableRows.length + 1}`,
+  })
+}
+
+function removeTableRow(rowId: string): void {
+  const field = selectedTemplateField.value
+
+  if (field) {
+    field.tableRows = (field.tableRows ?? []).filter((row) => row.id !== rowId)
+  }
+}
+
 function createFieldFromCatalog(
   catalogField: DocumentTemplateFieldCatalogItem,
   sortOrder: number,
@@ -476,8 +724,7 @@ function createFieldFromCatalog(
     required: false,
     placeholder: '',
     helpText: '',
-    width:
-      catalogField.type === 'textarea' || catalogField.type === 'photo' ? 'full' : 'half',
+    width: catalogField.type === 'textarea' || catalogField.type === 'photo' ? 'full' : 'half',
     sortOrder,
     options: [],
   }
@@ -517,52 +764,6 @@ function formatTime(timestamp: number): string {
     minute: '2-digit',
   }).format(timestamp)
 }
-
-function startCreateOption(): void {
-  editingOptionId.value = null
-  optionForm.label = ''
-  optionForm.value = ''
-  optionForm.category = selectedReferenceFieldLabel.value
-}
-
-function startEditOption(option: ReportTemplateOption): void {
-  editingOptionId.value = option.id
-  optionForm.label = option.label
-  optionForm.value = option.value
-  optionForm.category = option.category
-}
-
-async function saveOption(): Promise<void> {
-  if (!optionForm.label.trim()) {
-    return
-  }
-
-  await reportTemplateStore.saveOption({
-    id: editingOptionId.value ?? undefined,
-    field: selectedReferenceField.value,
-    label: optionForm.label,
-    value: optionForm.value,
-    category: optionForm.category || selectedReferenceFieldLabel.value,
-  })
-  startCreateOption()
-}
-
-async function deleteOption(optionId: string): Promise<void> {
-  const option = selectedOptions.value.find((item) => item.id === optionId)
-  const shouldDelete = window.confirm(
-    `Удалить вариант «${option?.label ?? optionId}» из справочника?`,
-  )
-
-  if (!shouldDelete) {
-    return
-  }
-
-  await reportTemplateStore.deleteOption(optionId)
-
-  if (editingOptionId.value === optionId) {
-    startCreateOption()
-  }
-}
 </script>
 
 <template>
@@ -573,11 +774,10 @@ async function deleteOption(optionId: string): Promise<void> {
           <p class="screen-kicker">Администратор</p>
           <h1 class="screen-title">Макеты отчетов</h1>
           <p class="screen-subtitle">
-            Создавайте структуру отчета и настраивайте стандартные варианты выпадающих списков.
+            Создавайте структуру отчета, поля и варианты для каждого макета.
           </p>
         </div>
         <button
-          v-if="activeWorkspaceTab === 'templates'"
           class="primary-button"
           type="button"
           :disabled="documentTemplateStore.isSaving"
@@ -588,25 +788,7 @@ async function deleteOption(optionId: string): Promise<void> {
         </button>
       </section>
 
-      <div class="workspace-tabs" role="tablist" aria-label="Настройки отчетов">
-        <button
-          type="button"
-          :class="{ 'workspace-tab--active': activeWorkspaceTab === 'templates' }"
-          @click="activeWorkspaceTab = 'templates'"
-        >
-          Макеты
-          <span>{{ documentTemplateStore.templates.length }}</span>
-        </button>
-        <button
-          type="button"
-          :class="{ 'workspace-tab--active': activeWorkspaceTab === 'reference' }"
-          @click="activeWorkspaceTab = 'reference'"
-        >
-          Варианты списков
-        </button>
-      </div>
-
-      <section v-if="activeWorkspaceTab === 'templates'" class="template-catalog">
+      <section class="template-catalog">
         <p v-if="catalogNotice" class="success-message catalog-message">
           {{ catalogNotice }}
         </p>
@@ -621,10 +803,7 @@ async function deleteOption(optionId: string): Promise<void> {
           :class="{ 'template-card--active': template.status === 'active' }"
         >
           <div class="template-card__top">
-            <span
-              class="status-badge"
-              :class="`status-badge--${template.status}`"
-            >
+            <span class="status-badge" :class="`status-badge--${template.status}`">
               {{ getTemplateStatusLabel(template) }}
             </span>
             <button
@@ -651,12 +830,7 @@ async function deleteOption(optionId: string): Promise<void> {
             <div>
               <dt>Полей</dt>
               <dd>
-                {{
-                  template.sections.reduce(
-                    (total, section) => total + section.fields.length,
-                    0,
-                  )
-                }}
+                {{ template.sections.reduce((total, section) => total + section.fields.length, 0) }}
               </dd>
             </div>
           </dl>
@@ -664,22 +838,17 @@ async function deleteOption(optionId: string): Promise<void> {
           <div class="template-card__footer">
             <small>Обновлен {{ formatDate(template.updatedAt) }}</small>
             <div>
-              <button
-                class="secondary-button"
-                type="button"
-                @click="editTemplate(template)"
-              >
+              <button class="secondary-button" type="button" @click="editTemplate(template)">
                 {{ template.status === 'draft' ? 'Продолжить' : 'Редактировать' }}
               </button>
               <button
-                v-if="template.status === 'draft'"
                 class="text-danger-button"
                 type="button"
                 aria-label="Удалить макет"
                 title="Удалить"
                 @click="deleteTemplate(template)"
               >
-                ×
+                Удалить
               </button>
             </div>
           </div>
@@ -700,94 +869,6 @@ async function deleteOption(optionId: string): Promise<void> {
           {{ documentTemplateStore.errorMessage }}
         </p>
       </section>
-
-      <section v-else class="reference-layout">
-        <aside class="reference-fields app-card">
-          <button
-            v-for="field in referenceFields"
-            :key="field.value"
-            class="reference-field-tab"
-            :class="{ 'reference-field-tab--active': field.value === selectedReferenceField }"
-            type="button"
-            @click="selectedReferenceField = field.value; startCreateOption()"
-          >
-            {{ field.label }}
-            <span>{{ reportTemplateStore.getOptionsByField(field.value).length }}</span>
-          </button>
-        </aside>
-
-        <section class="reference-panel app-card">
-          <div class="panel-heading">
-            <div>
-              <p class="screen-kicker">{{ selectedReferenceFieldLabel }}</p>
-              <h2>Варианты для выпадающего списка</h2>
-            </div>
-            <span>{{ selectedOptions.length }}</span>
-          </div>
-
-          <form class="option-form" @submit.prevent="saveOption">
-            <label class="field-label">
-              Название
-              <input v-model="optionForm.label" class="field-control" />
-            </label>
-            <label class="field-label">
-              Значение
-              <input
-                v-model="optionForm.value"
-                class="field-control"
-                placeholder="Если пусто, используется название"
-              />
-            </label>
-            <label class="field-label">
-              Группа
-              <input v-model="optionForm.category" class="field-control" />
-            </label>
-
-            <div class="option-form__actions">
-              <button
-                class="primary-button"
-                type="submit"
-                :disabled="reportTemplateStore.isSaving"
-              >
-                {{ editingOptionId ? 'Сохранить' : 'Добавить' }}
-              </button>
-              <button class="secondary-button" type="button" @click="startCreateOption">
-                Очистить
-              </button>
-            </div>
-          </form>
-
-          <div v-if="selectedOptions.length" class="option-list">
-            <article v-for="option in selectedOptions" :key="option.id" class="option-row">
-              <div>
-                <h3>{{ option.label }}</h3>
-                <p>{{ option.value }} · {{ option.category || 'Без группы' }}</p>
-              </div>
-              <div class="option-row__actions">
-                <button
-                  class="secondary-button compact-button"
-                  type="button"
-                  @click="startEditOption(option)"
-                >
-                  Изменить
-                </button>
-                <button
-                  class="danger-button compact-button"
-                  type="button"
-                  @click="deleteOption(option.id)"
-                >
-                  Удалить
-                </button>
-              </div>
-            </article>
-          </div>
-
-          <p v-else class="empty-state">Для этого поля пока нет вариантов.</p>
-          <p v-if="reportTemplateStore.errorMessage" class="error-message">
-            {{ reportTemplateStore.errorMessage }}
-          </p>
-        </section>
-      </section>
     </template>
 
     <template v-else>
@@ -797,10 +878,7 @@ async function deleteOption(optionId: string): Promise<void> {
           К макетам
         </button>
         <div class="builder-toolbar__title">
-          <span
-            class="status-badge"
-            :class="`status-badge--${editorTemplate.status}`"
-          >
+          <span class="status-badge" :class="`status-badge--${editorTemplate.status}`">
             {{ getTemplateStatusLabel(editorTemplate) }}
           </span>
         </div>
@@ -828,6 +906,25 @@ async function deleteOption(optionId: string): Promise<void> {
         <span aria-hidden="true">✓</span>
         {{ editorNotice }}
       </p>
+
+      <nav class="schema-tabs" aria-label="Части макета">
+        <button
+          type="button"
+          :class="{ 'schema-tabs__button--active': editorMode === 'input' }"
+          @click="editorMode = 'input'"
+        >
+          <strong>Форма инспектора</strong>
+          <small>inputSchema · шаги и поля для телефона</small>
+        </button>
+        <button
+          type="button"
+          :class="{ 'schema-tabs__button--active': editorMode === 'render' }"
+          @click="editorMode = 'render'"
+        >
+          <strong>Печатный PDF</strong>
+          <small>renderSpec · страницы и размещение</small>
+        </button>
+      </nav>
 
       <section class="builder-meta app-card">
         <label class="field-label">
@@ -858,7 +955,7 @@ async function deleteOption(optionId: string): Promise<void> {
         </dl>
       </section>
 
-      <section class="builder-layout">
+      <section v-if="editorMode === 'input'" class="builder-layout">
         <aside class="builder-structure app-card">
           <div class="panel-heading">
             <div>
@@ -968,11 +1065,7 @@ async function deleteOption(optionId: string): Promise<void> {
                 >
                   ↓
                 </button>
-                <button
-                  type="button"
-                  title="Удалить поле"
-                  @click.stop="removeField(field.id)"
-                >
+                <button type="button" title="Удалить поле" @click.stop="removeField(field.id)">
                   ×
                 </button>
               </div>
@@ -990,16 +1083,8 @@ async function deleteOption(optionId: string): Promise<void> {
               Добавить готовое поле
               <select v-model="fieldCatalogSelection" class="field-control">
                 <option value="">Выберите поле</option>
-                <optgroup
-                  v-for="(fields, group) in catalogGroups"
-                  :key="group"
-                  :label="group"
-                >
-                  <option
-                    v-for="field in fields"
-                    :key="field.dataPath"
-                    :value="field.dataPath"
-                  >
+                <optgroup v-for="(fields, group) in catalogGroups" :key="group" :label="group">
+                  <option v-for="field in fields" :key="field.dataPath" :value="field.dataPath">
                     {{ field.label }}
                   </option>
                 </optgroup>
@@ -1013,9 +1098,7 @@ async function deleteOption(optionId: string): Promise<void> {
             >
               Добавить
             </button>
-            <button class="ghost-button" type="button" @click="addCustomField">
-              ＋ Свое поле
-            </button>
+            <button class="ghost-button" type="button" @click="addCustomField">＋ Свое поле</button>
           </div>
         </section>
 
@@ -1035,7 +1118,11 @@ async function deleteOption(optionId: string): Promise<void> {
             </label>
             <label class="field-label">
               Тип поля
-              <select v-model="selectedTemplateField.type" class="field-control">
+              <select
+                v-model="selectedTemplateField.type"
+                class="field-control"
+                @change="handleFieldTypeChange(selectedTemplateField)"
+              >
                 <option
                   v-for="typeOption in fieldTypeOptions"
                   :key="typeOption.value"
@@ -1047,7 +1134,7 @@ async function deleteOption(optionId: string): Promise<void> {
             </label>
 
             <section
-              v-if="selectedTemplateField.type === 'select'"
+              v-if="['select', 'radio', 'passFail'].includes(selectedTemplateField.type)"
               class="list-options-editor"
             >
               <div class="list-options-editor__heading">
@@ -1113,6 +1200,164 @@ async function deleteOption(optionId: string): Promise<void> {
                 >
                   + Добавить вариант
                 </button>
+              </div>
+            </section>
+
+            <section v-if="selectedTemplateField.type === 'table'" class="table-schema-editor">
+              <div class="list-options-editor__heading">
+                <strong>Колонки таблицы</strong>
+                <button class="text-button" type="button" @click="addTableColumn">+ Колонка</button>
+              </div>
+              <div
+                v-for="column in selectedTemplateField.tableColumns ?? []"
+                :key="column.id"
+                class="table-schema-row"
+              >
+                <input v-model="column.label" class="field-control" aria-label="Название колонки" />
+                <select v-model="column.type" class="field-control" aria-label="Тип колонки">
+                  <option value="text">Текст</option>
+                  <option value="number">Число</option>
+                  <option value="select">Список</option>
+                  <option value="checkbox">Флажок</option>
+                </select>
+                <button
+                  type="button"
+                  aria-label="Удалить колонку"
+                  @click="removeTableColumn(column.id)"
+                >
+                  ×
+                </button>
+                <div v-if="column.type === 'select'" class="table-column-options">
+                  <strong>Варианты списка</strong>
+                  <div
+                    v-for="option in column.options ?? []"
+                    :key="option.id"
+                    class="table-column-option"
+                  >
+                    <input
+                      v-model="option.label"
+                      class="field-control"
+                      aria-label="Вариант колонки"
+                    />
+                    <button
+                      type="button"
+                      aria-label="Удалить вариант колонки"
+                      @click="removeTableColumnOption(column, option.id)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div class="table-column-option table-column-option--add">
+                    <input
+                      v-model="tableOptionLabels[column.id]"
+                      class="field-control"
+                      aria-label="Новый вариант колонки"
+                      placeholder="Название варианта"
+                      @keydown.enter.prevent="addTableColumnOption(column)"
+                    />
+                    <button type="button" @click="addTableColumnOption(column)">+</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="list-options-editor__heading table-schema-editor__rows">
+                <strong>Строки проверки</strong>
+                <button class="text-button" type="button" @click="addTableRow">+ Строка</button>
+              </div>
+              <div
+                v-for="row in selectedTemplateField.tableRows ?? []"
+                :key="row.id"
+                class="table-schema-row table-schema-row--single"
+              >
+                <input v-model="row.label" class="field-control" aria-label="Название строки" />
+                <button type="button" aria-label="Удалить строку" @click="removeTableRow(row.id)">
+                  ×
+                </button>
+              </div>
+            </section>
+
+            <div v-if="selectedTemplateField.type === 'measurement'" class="measurement-properties">
+              <label class="field-label">
+                Единица измерения
+                <input
+                  v-model="selectedTemplateField.unit"
+                  class="field-control"
+                  placeholder="°C, %, кг"
+                />
+              </label>
+              <label class="field-label">
+                Норма
+                <input
+                  v-model="selectedTemplateField.standardValue"
+                  class="field-control"
+                  placeholder="Например, +6°C"
+                />
+              </label>
+            </div>
+
+            <section v-if="selectedTemplateField.type === 'calculated'" class="calculation-editor">
+              <div class="list-options-editor__heading">
+                <strong>Формула</strong>
+              </div>
+              <label class="field-label">
+                Операция
+                <select v-model="selectedTemplateField.calculation!.operator" class="field-control">
+                  <option value="sum">Сумма</option>
+                  <option value="difference">Разность</option>
+                  <option value="average">Среднее</option>
+                </select>
+              </label>
+              <label class="field-label">
+                Знаков после запятой
+                <input
+                  v-model.number="selectedTemplateField.calculation!.precision"
+                  class="field-control"
+                  type="number"
+                  min="0"
+                  max="10"
+                />
+              </label>
+              <div class="calculation-sources">
+                <strong>Поля-источники</strong>
+                <small v-if="!selectedTemplateField.calculation!.sourcePaths.length">
+                  Добавьте хотя бы одно числовое поле — без него значение не рассчитывается.
+                </small>
+                <div
+                  v-for="sourcePath in selectedTemplateField.calculation!.sourcePaths"
+                  :key="sourcePath"
+                  class="table-column-option"
+                >
+                  <span>{{
+                    calculationSourceFields.find((field) => field.dataPath === sourcePath)?.label ??
+                    sourcePath
+                  }}</span>
+                  <button
+                    type="button"
+                    aria-label="Удалить поле-источник"
+                    @click="removeCalculationSource(selectedTemplateField, sourcePath)"
+                  >
+                    ×
+                  </button>
+                </div>
+                <select
+                  class="field-control"
+                  aria-label="Добавить поле-источник"
+                  @change="
+                    addCalculationSource(
+                      selectedTemplateField,
+                      ($event.target as HTMLSelectElement).value,
+                    )
+                  "
+                >
+                  <option value="">Добавить числовое поле</option>
+                  <option
+                    v-for="sourceField in unusedCalculationSourceFields"
+                    :key="sourceField.dataPath"
+                    :value="sourceField.dataPath"
+                  >
+                    {{ sourceField.label }}
+                  </option>
+                </select>
               </div>
             </section>
 
@@ -1199,7 +1444,13 @@ async function deleteOption(optionId: string): Promise<void> {
               <input
                 v-else
                 disabled
-                :type="selectedTemplateField.type === 'number' ? 'number' : selectedTemplateField.type === 'date' ? 'date' : 'text'"
+                :type="
+                  selectedTemplateField.type === 'number'
+                    ? 'number'
+                    : selectedTemplateField.type === 'date'
+                      ? 'date'
+                      : 'text'
+                "
                 :placeholder="selectedTemplateField.placeholder || 'Введите значение'"
               />
               <small v-if="selectedTemplateField.helpText">
@@ -1224,6 +1475,192 @@ async function deleteOption(optionId: string): Promise<void> {
         </aside>
       </section>
 
+      <section v-else class="render-spec-editor app-card">
+        <div class="render-spec-editor__heading">
+          <div>
+            <p class="screen-kicker">Печатный макет</p>
+            <h2>Размещение данных в PDF</h2>
+            <p>Стиль фиксирован; здесь задаются разделы, поля, таблицы и порядок печати.</p>
+          </div>
+          <button class="secondary-button" type="button" @click="resetRenderSpec">
+            Сбросить размещение
+          </button>
+        </div>
+
+        <div class="render-document-settings">
+          <label class="field-label render-title-field">
+            Заголовок документа
+            <input v-model="editorTemplate.renderSpec.documentTitle" class="field-control" />
+          </label>
+          <div class="field-label render-title-field render-style-summary">
+            Стиль выходного PDF
+            <strong>Единый фирменный шаблон</strong>
+            <small>Оформление фиксировано; состав и подписи полей задаются ниже.</small>
+          </div>
+        </div>
+
+        <div class="render-section-list">
+          <article
+            v-for="(renderSection, index) in editorTemplate.renderSpec.sections"
+            :key="renderSection.id"
+            class="render-section-card"
+            :class="{
+              'render-section-card--hidden': renderSection.hidden,
+              'render-section-card--expanded': expandedRenderSectionId === renderSection.id,
+            }"
+          >
+            <header class="render-section-card__header">
+              <span class="render-section-card__number">{{ index + 1 }}</span>
+              <label class="field-label render-section-title">
+                Заголовок печатного раздела
+                <input v-model="renderSection.title" class="field-control" />
+              </label>
+              <span class="render-section-summary">
+                {{ getVisibleRenderFieldCount(renderSection) }} / {{ renderSection.fields.length }}
+                полей
+              </span>
+              <div class="render-section-actions">
+                <div class="render-order-actions">
+                  <button
+                    type="button"
+                    :disabled="index === 0"
+                    aria-label="Поднять печатный раздел"
+                    @click="moveRenderSection(renderSection.id, -1)"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="index === editorTemplate.renderSpec.sections.length - 1"
+                    aria-label="Опустить печатный раздел"
+                    @click="moveRenderSection(renderSection.id, 1)"
+                  >
+                    ↓
+                  </button>
+                </div>
+                <button
+                  class="render-section-toggle"
+                  type="button"
+                  :aria-expanded="expandedRenderSectionId === renderSection.id"
+                  @click="toggleRenderSection(renderSection.id)"
+                >
+                  {{ expandedRenderSectionId === renderSection.id ? 'Свернуть' : 'Настроить' }}
+                </button>
+              </div>
+            </header>
+
+            <div
+              v-if="expandedRenderSectionId === renderSection.id"
+              class="render-section-card__body"
+            >
+              <div class="render-section-settings">
+                <label class="compact-choice">
+                  Колонки
+                  <select v-model.number="renderSection.columns" class="field-control">
+                    <option :value="1">1</option>
+                    <option :value="2">2</option>
+                  </select>
+                </label>
+                <label class="toggle-row compact-toggle">
+                  <span>С новой страницы</span>
+                  <input v-model="renderSection.pageBreakBefore" type="checkbox" />
+                </label>
+                <label class="toggle-row compact-toggle">
+                  <span>Описание раздела</span>
+                  <input v-model="renderSection.showDescription" type="checkbox" />
+                </label>
+                <label class="toggle-row compact-toggle">
+                  <span>Не печатать раздел</span>
+                  <input v-model="renderSection.hidden" type="checkbox" />
+                </label>
+              </div>
+
+              <div class="render-field-list">
+                <div class="render-field-list__heading">
+                  <strong>Поля в PDF</strong>
+                  <small>Меняйте порядок, подпись, ширину и способ отображения.</small>
+                </div>
+                <div
+                  v-for="(renderField, fieldIndex) in renderSection.fields"
+                  :key="renderField.dataPath"
+                  class="render-field-row"
+                  :class="{ 'render-field-row--hidden': renderField.hidden }"
+                >
+                  <div class="render-field-order">
+                    <button
+                      type="button"
+                      :disabled="fieldIndex === 0"
+                      aria-label="Поднять поле"
+                      @click="moveRenderField(renderSection, renderField.dataPath, -1)"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      :disabled="fieldIndex === renderSection.fields.length - 1"
+                      aria-label="Опустить поле"
+                      @click="moveRenderField(renderSection, renderField.dataPath, 1)"
+                    >
+                      ↓
+                    </button>
+                  </div>
+                  <label class="field-label render-field-label">
+                    Подпись в PDF
+                    <input
+                      v-model="renderField.label"
+                      class="field-control"
+                      :placeholder="getRenderInputField(renderSection, renderField)?.label"
+                    />
+                    <small>
+                      {{
+                        getFieldTypeLabel(
+                          getRenderInputField(renderSection, renderField)?.type ?? 'text',
+                        )
+                      }}
+                      · {{ renderField.dataPath }}
+                    </small>
+                  </label>
+                  <label class="field-label render-field-compact">
+                    Ширина
+                    <select v-model="renderField.width" class="field-control">
+                      <option value="half">½ строки</option>
+                      <option value="full">Вся строка</option>
+                    </select>
+                  </label>
+                  <label class="field-label render-field-compact">
+                    Вид значения
+                    <select v-model="renderField.display" class="field-control">
+                      <option value="value">Текст</option>
+                      <option value="checkmark">Отметка</option>
+                      <option value="table">Таблица</option>
+                    </select>
+                  </label>
+                  <div class="render-field-toggles">
+                    <label class="toggle-row compact-toggle">
+                      <span>Скрывать пустое</span>
+                      <input v-model="renderField.hideWhenEmpty" type="checkbox" />
+                    </label>
+                    <label class="toggle-row compact-toggle">
+                      <span>Не печатать</span>
+                      <input v-model="renderField.hidden" type="checkbox" />
+                    </label>
+                  </div>
+                </div>
+
+                <p v-if="!renderSection.fields.length" class="render-field-empty">
+                  В этом разделе пока нет полей мобильной формы.
+                </p>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <p class="render-spec-note">
+          Изменения здесь влияют только на итоговый A4 PDF. Форма инспектора и сохранённые значения
+          при перестановке или скрытии печатных полей не меняются.
+        </p>
+      </section>
+
       <p v-if="documentTemplateStore.errorMessage" class="error-message">
         {{ documentTemplateStore.errorMessage }}
       </p>
@@ -1239,38 +1676,6 @@ async function deleteOption(optionId: string): Promise<void> {
 .template-heading .primary-button {
   gap: 7px;
   white-space: nowrap;
-}
-
-.workspace-tabs {
-  display: flex;
-  gap: 22px;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.workspace-tabs button {
-  display: inline-flex;
-  min-height: 46px;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 2px solid transparent;
-  color: var(--color-text-muted);
-  font-size: 0.86rem;
-  font-weight: 850;
-}
-
-.workspace-tabs button span {
-  display: grid;
-  min-width: 22px;
-  height: 22px;
-  place-items: center;
-  border-radius: 7px;
-  background: var(--color-surface-muted);
-  font-size: 0.72rem;
-}
-
-.workspace-tabs .workspace-tab--active {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
 }
 
 .template-catalog {
@@ -1400,11 +1805,12 @@ async function deleteOption(optionId: string): Promise<void> {
 }
 
 .text-danger-button {
-  min-width: 34px;
-  min-height: 34px;
+  min-height: 38px;
   border-radius: 8px;
+  padding: 7px 10px;
   color: var(--color-danger);
-  font-size: 1.3rem;
+  font-size: 0.78rem;
+  font-weight: 850;
 }
 
 .create-template-card {
@@ -1436,124 +1842,6 @@ async function deleteOption(optionId: string): Promise<void> {
 
 .catalog-message {
   grid-column: 1 / -1;
-}
-
-.reference-layout {
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  gap: 14px;
-}
-
-.reference-fields,
-.reference-panel {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  padding: 12px;
-}
-
-.reference-field-tab {
-  display: flex;
-  min-height: 46px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  padding: 10px;
-  color: var(--color-text-muted);
-  font-size: 0.82rem;
-  font-weight: 800;
-  text-align: left;
-}
-
-.reference-field-tab span {
-  min-width: 24px;
-  border-radius: 7px;
-  padding: 3px 6px;
-  background: var(--color-surface-muted);
-  text-align: center;
-}
-
-.reference-field-tab--active {
-  border-color: var(--color-border);
-  background: var(--color-primary);
-  color: #ffffff;
-}
-
-.reference-field-tab--active span {
-  background: rgba(255, 255, 255, 0.14);
-}
-
-.panel-heading {
-  align-items: flex-start;
-}
-
-.panel-heading h2 {
-  color: var(--color-text);
-  font-size: 1rem;
-  font-weight: 900;
-}
-
-.panel-heading > span:not(.property-type-icon) {
-  border-radius: 8px;
-  padding: 5px 9px;
-  background: var(--color-surface-muted);
-  color: var(--color-text);
-  font-size: 0.78rem;
-  font-weight: 900;
-}
-
-.option-form {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  padding: 12px;
-  background: var(--color-surface-muted);
-}
-
-.option-form__actions,
-.option-row,
-.option-row__actions {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.option-form__actions {
-  grid-column: 1 / -1;
-  justify-content: flex-start;
-}
-
-.option-list {
-  display: grid;
-  gap: 8px;
-}
-
-.option-row {
-  border: 1px solid var(--color-border);
-  border-radius: 9px;
-  padding: 12px;
-}
-
-.option-row h3 {
-  color: var(--color-text);
-  font-size: 0.9rem;
-  font-weight: 900;
-}
-
-.option-row p {
-  margin-top: 3px;
-  color: var(--color-text-muted);
-  font-size: 0.78rem;
-}
-
-.compact-button {
-  min-height: 38px;
-  padding: 7px 11px;
 }
 
 .builder-toolbar {
@@ -1621,6 +1909,338 @@ async function deleteOption(optionId: string): Promise<void> {
   align-items: end;
   gap: 12px;
   padding: 14px;
+}
+
+.schema-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.schema-tabs button {
+  display: grid;
+  gap: 0.2rem;
+  padding: 1rem 1.1rem;
+  text-align: left;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+}
+
+.schema-tabs button small {
+  color: var(--color-text-muted);
+}
+
+.schema-tabs .schema-tabs__button--active {
+  color: #fff;
+  background: #175b2a;
+  border-color: #175b2a;
+}
+
+.schema-tabs .schema-tabs__button--active small {
+  color: #d9f4df;
+}
+
+.table-schema-editor,
+.measurement-properties,
+.calculation-editor,
+.calculation-sources,
+.table-column-options {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.table-schema-editor__rows {
+  margin-top: 0.75rem;
+}
+
+.table-schema-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 8rem auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.table-schema-row--single {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.table-column-options {
+  grid-column: 1 / -1;
+  padding: 0.75rem;
+  background: var(--color-surface-muted);
+  border-radius: 0.65rem;
+}
+
+.table-column-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.table-column-option--add button {
+  color: #fff;
+  background: var(--color-primary);
+}
+
+.table-schema-row button {
+  width: 2.4rem;
+  height: 2.4rem;
+  border: 0;
+  border-radius: 0.65rem;
+}
+
+.render-spec-editor {
+  display: grid;
+  gap: 1.25rem;
+  padding: clamp(1rem, 2vw, 1.5rem);
+}
+
+.render-spec-editor__heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2rem;
+  align-items: center;
+}
+
+.render-spec-editor__heading h2,
+.render-spec-editor__heading p {
+  margin: 0;
+}
+
+.render-section-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.render-document-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.render-style-summary {
+  border: 1px solid #d9e9dc;
+  border-radius: 0.75rem;
+  padding: 0.8rem 0.9rem;
+  color: #17391f;
+  background: #f5faf6;
+  line-height: 1.45;
+}
+
+.render-style-summary strong,
+.render-style-summary small {
+  display: block;
+}
+
+.render-style-summary small {
+  color: #617267;
+  font-size: 0.75rem;
+}
+
+.render-section-card {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  background: #f5faf6;
+  border: 1px solid #d9e9dc;
+  border-radius: 0.9rem;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.render-section-card--expanded {
+  border-color: #91b69a;
+  box-shadow: 0 10px 26px rgba(21, 95, 36, 0.08);
+}
+
+.render-section-card--hidden,
+.render-field-row--hidden {
+  opacity: 0.58;
+}
+
+.render-section-card__header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 0.8rem;
+  align-items: center;
+}
+
+.render-section-card__body {
+  display: grid;
+  gap: 0.8rem;
+  border-top: 1px solid #d9e9dc;
+  padding-top: 0.8rem;
+}
+
+.render-section-card small,
+.render-spec-note {
+  color: var(--color-text-muted);
+}
+
+.render-spec-note {
+  margin: 0;
+  padding: 0.15rem 0.1rem 0.1rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.render-section-card__number {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  color: #fff;
+  background: #175b2a;
+  border-radius: 999px;
+}
+
+.render-section-title {
+  gap: 0.3rem;
+}
+
+.render-section-summary {
+  border-radius: 999px;
+  padding: 0.4rem 0.65rem;
+  color: var(--color-primary);
+  background: #e4efe6;
+  font-size: 0.72rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.render-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.render-section-toggle {
+  min-width: 6.2rem;
+  min-height: 2rem;
+  border: 1px solid #9cbaa3;
+  border-radius: 0.55rem;
+  padding: 0.35rem 0.7rem;
+  color: var(--color-primary);
+  background: #fff;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.render-section-card--expanded .render-section-toggle {
+  color: #fff;
+  background: var(--color-primary);
+}
+
+.render-order-actions,
+.render-field-order {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.render-order-actions button,
+.render-field-order button {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 0.55rem;
+  color: var(--color-primary);
+  background: #fff;
+  font-weight: 900;
+}
+
+.render-order-actions button:disabled,
+.render-field-order button:disabled {
+  opacity: 0.35;
+}
+
+.render-section-settings {
+  display: grid;
+  grid-template-columns: 8rem repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  align-items: center;
+  border: 1px solid #dce8de;
+  border-radius: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  background: #fff;
+}
+
+.render-field-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.render-field-list__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.render-field-row {
+  display: grid;
+  grid-template-columns: auto minmax(14rem, 1fr) 8.5rem 9rem minmax(10rem, 0.65fr);
+  gap: 0.65rem;
+  align-items: center;
+  border: 1px solid #dce8de;
+  border-radius: 0.75rem;
+  padding: 0.7rem;
+  background: #fff;
+}
+
+.render-field-order {
+  flex-direction: column;
+}
+
+.render-field-order button {
+  width: 1.65rem;
+  height: 1.45rem;
+  font-size: 0.7rem;
+}
+
+.render-field-label,
+.render-field-compact {
+  gap: 0.25rem;
+}
+
+.render-field-label small {
+  overflow: hidden;
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.render-field-toggles {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.render-field-toggles .toggle-row,
+.render-section-settings .toggle-row {
+  min-height: 2.45rem;
+  border: 0;
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.55rem;
+  background: #f5f8f5;
+}
+
+.render-field-empty {
+  margin: 0;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 0.75rem;
+  padding: 1.2rem;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.compact-choice,
+.compact-toggle {
+  font-size: 0.8rem;
 }
 
 .builder-meta dl {
@@ -2199,13 +2819,50 @@ async function deleteOption(optionId: string): Promise<void> {
   .template-catalog {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .render-field-row {
+    grid-template-columns: auto minmax(14rem, 1fr) repeat(2, 8.5rem);
+  }
+
+  .render-field-toggles {
+    grid-column: 2 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 860px) {
-  .reference-layout,
   .builder-layout,
-  .builder-meta {
+  .builder-meta,
+  .render-spec-editor__heading,
+  .render-document-settings {
     grid-template-columns: 1fr;
+  }
+
+  .render-section-settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .render-section-card__header {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .render-section-summary,
+  .render-section-actions {
+    grid-column: 2;
+  }
+
+  .render-section-actions {
+    justify-content: space-between;
+  }
+
+  .render-field-row {
+    grid-template-columns: auto minmax(0, 1fr) minmax(8rem, 0.5fr);
+  }
+
+  .render-field-compact:last-of-type,
+  .render-field-toggles {
+    grid-column: 2 / -1;
   }
 
   .builder-properties {
@@ -2240,10 +2897,22 @@ async function deleteOption(optionId: string): Promise<void> {
 
 @media (max-width: 620px) {
   .template-catalog,
+  .schema-tabs,
   .field-builder-list,
   .section-navigation,
-  .field-add-panel {
+  .field-add-panel,
+  .render-section-settings,
+  .render-field-row {
     grid-template-columns: 1fr;
+  }
+
+  .render-field-order {
+    flex-direction: row;
+  }
+
+  .render-field-compact:last-of-type,
+  .render-field-toggles {
+    grid-column: auto;
   }
 
   .field-builder-card--full {

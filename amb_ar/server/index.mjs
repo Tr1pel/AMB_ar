@@ -6,6 +6,7 @@ import { dirname, extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { createServerDatabase } from './database.mjs'
+import { generateTemplateReportPdf } from './branded-report-pdf.mjs'
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url))
 const PROJECT_DIR = join(SERVER_DIR, '..')
@@ -19,6 +20,7 @@ const MAX_BODY_SIZE_BYTES = 100 * 1024 * 1024
 const MAX_PHOTO_SIZE_BYTES = 15 * 1024 * 1024
 const MAX_DOCUMENT_SIZE_BYTES = 50 * 1024 * 1024
 const MAX_PHOTOS_PER_REPORT = 100
+const ARCHIVE_PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000
 const WORKER_REPORT_STATUSES = new Set(['draft', 'ready'])
 const PHOTO_CATEGORIES = new Set([
   'vehicle',
@@ -33,10 +35,24 @@ const PHOTO_CATEGORIES = new Set([
 ])
 
 const serverDatabase = createServerDatabase(DB_PATH)
-const { readDb, writeDb } = serverDatabase
+const {
+  readDb,
+  writeDb,
+  writeDbReplacingGeneratedDocuments,
+  purgeExpiredArchivedReports,
+  permanentlyDeleteArchivedReport,
+} = serverDatabase
 let mutationTail = Promise.resolve()
 
+await purgeExpiredArchivedReportsNow()
 await ensureSeeds()
+
+const archivePurgeTimer = setInterval(() => {
+  void purgeExpiredArchivedReportsNow().catch((error) => {
+    console.error('Не удалось очистить просроченные архивные отчеты', error)
+  })
+}, ARCHIVE_PURGE_INTERVAL_MS)
+archivePurgeTimer.unref()
 
 export const server = createServer(async (request, response) => {
   setCorsHeaders(response)
@@ -108,13 +124,20 @@ server.listen(PORT, HOST, () => {
 })
 
 export async function closeServer() {
+  clearInterval(archivePurgeTimer)
+
   if (server.listening) {
     await new Promise((resolveClose, rejectClose) => {
       server.close((error) => (error ? rejectClose(error) : resolveClose()))
     })
   }
 
+  await mutationTail
   serverDatabase.close()
+}
+
+export async function purgeExpiredArchivedReportsNow(now = Date.now()) {
+  return serializeMutation(async () => purgeExpiredArchivedReports(now))
 }
 
 async function handleApiRequest(request, response, requestUrl, db) {
@@ -287,14 +310,26 @@ async function handleApiRequest(request, response, requestUrl, db) {
   }
 
   if (pathname === '/api/document-templates/seed' && method === 'POST') {
-    if (!db.documentTemplates.some(isVisibleEntity)) {
-      const input = await readJsonBody(request)
+    const input = await readJsonBody(request)
+    const allowedSeedIds = new Set([
+      'document-template-quality-standard',
+      'document-template-bell-pepper-inspection',
+    ])
 
-      if (input.id !== 'document-template-quality-standard') {
-        throw createHttpError(400, 'Некорректный системный макет')
-      }
+    if (!allowedSeedIds.has(input.id)) {
+      throw createHttpError(400, 'Некорректный системный макет')
+    }
 
-      const sections = validateTemplateSections(input.sections)
+    if (
+      !db.documentTemplates.some(
+        (template) => template.id === input.id && isVisibleEntity(template),
+      )
+    ) {
+      const inputSchema = validateInputSchema(
+        input.inputSchema ?? { version: 1, steps: input.sections },
+      )
+      const renderSpec = validateRenderSpec(input.renderSpec, inputSchema)
+      const sections = inputSchema.steps
 
       db.documentTemplates = upsert(
         db.documentTemplates,
@@ -302,6 +337,8 @@ async function handleApiRequest(request, response, requestUrl, db) {
           id: input.id,
           name: normalizeRequiredText(input.name, 'Название макета'),
           description: String(input.description ?? '').trim(),
+          inputSchema,
+          renderSpec,
           sections,
           status: 'active',
           createdByAccountId: 'system',
@@ -314,12 +351,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
       writeDb(db)
     }
 
-    sendJson(
-      response,
-      db.documentTemplates.find(
-        (template) => template.id === 'document-template-quality-standard',
-      ) ?? null,
-    )
+    sendJson(response, db.documentTemplates.find((template) => template.id === input.id) ?? null)
     return true
   }
 
@@ -354,7 +386,15 @@ async function handleApiRequest(request, response, requestUrl, db) {
       throw createHttpError(400, 'Некорректный статус макета')
     }
 
-    const sections = validateTemplateSections(input.sections ?? existing?.sections)
+    const inputSchema = validateInputSchema(
+      input.inputSchema ??
+        existing?.inputSchema ?? {
+          version: 1,
+          steps: input.sections ?? existing?.sections,
+        },
+    )
+    const renderSpec = validateRenderSpec(input.renderSpec ?? existing?.renderSpec, inputSchema)
+    const sections = inputSchema.steps
 
     if (status === 'active' && !sections.some((section) => section.fields.length > 0)) {
       throw createHttpError(400, 'Опубликованный макет должен содержать хотя бы одно поле')
@@ -366,6 +406,8 @@ async function handleApiRequest(request, response, requestUrl, db) {
       name: normalizeRequiredText(input.name ?? existing?.name, 'Название макета'),
       description: String(input.description ?? existing?.description ?? '').trim(),
       status,
+      inputSchema,
+      renderSpec,
       sections,
       createdByAccountId: existing?.createdByAccountId ?? admin.id,
       createdAt: existing?.createdAt ?? input.createdAt ?? now,
@@ -386,11 +428,9 @@ async function handleApiRequest(request, response, requestUrl, db) {
 
   if (documentTemplateId && method === 'DELETE') {
     requireAdmin(request, db)
-    const template = db.documentTemplates.find((item) => item.id === documentTemplateId)
-
-    if (template && template.status !== 'draft') {
-      throw createHttpError(400, 'Можно удалить только черновик макета')
-    }
+    const template = db.documentTemplates.find(
+      (item) => item.id === documentTemplateId && isVisibleEntity(item),
+    )
 
     if (template) {
       const deletedAt = Date.now()
@@ -409,8 +449,85 @@ async function handleApiRequest(request, response, requestUrl, db) {
     requireAdmin(request, db)
     sendJson(
       response,
-      visibleReports(db).filter((report) => report.status === 'ready' || report.status === 'exported'),
+      visibleReports(db).filter(
+        (report) => report.status === 'ready' || report.status === 'exported',
+      ),
     )
+    return true
+  }
+
+  if (pathname === '/api/reports/archive' && method === 'GET') {
+    requireAdmin(request, db)
+    sendJson(
+      response,
+      db.reportDrafts
+        .filter((report) => report.status === 'archived' && report._deletedAt !== undefined)
+        .sort((first, second) => second._deletedAt - first._deletedAt),
+    )
+    return true
+  }
+
+  const archivedReportMatch = pathname.match(/^\/api\/reports\/archive\/([^/]+)$/)
+
+  if (archivedReportMatch && method === 'POST') {
+    requireAdmin(request, db)
+    const archivedReportId = decodeURIComponent(archivedReportMatch[1])
+    const report = db.reportDrafts.find(
+      (item) =>
+        item.id === archivedReportId && item.status === 'archived' && item._deletedAt !== undefined,
+    )
+
+    if (!report) {
+      throw createHttpError(404, 'Архивный отчет не найден')
+    }
+
+    const restoredAt = Date.now()
+    const restoredStatus =
+      report.archivedFromStatus ??
+      (db.generatedDocuments.some((document) => document.draftId === archivedReportId)
+        ? 'exported'
+        : 'ready')
+
+    db.reportDrafts = upsert(
+      db.reportDrafts,
+      stampEntity({
+        ...report,
+        status: restoredStatus,
+        archivedFromStatus: undefined,
+        updatedAt: restoredAt,
+        _deletedAt: undefined,
+      }),
+    )
+    const reportPhotoIds = new Set(report.photoIds ?? [])
+    db.productPhotos = db.productPhotos.map((photo) =>
+      photo.draftId === archivedReportId && reportPhotoIds.has(photo.id)
+        ? stampEntity({ ...photo, _deletedAt: undefined })
+        : photo,
+    )
+    db.generatedDocuments = db.generatedDocuments.map((document) =>
+      document.draftId === archivedReportId
+        ? stampEntity({ ...document, _deletedAt: undefined })
+        : document,
+    )
+    writeDb(db)
+    sendJson(response, { ok: true })
+    return true
+  }
+
+  if (archivedReportMatch && method === 'DELETE') {
+    requireAdmin(request, db)
+    const archivedReportId = decodeURIComponent(archivedReportMatch[1])
+    const report = db.reportDrafts.find(
+      (item) =>
+        item.id === archivedReportId && item.status === 'archived' && item._deletedAt !== undefined,
+    )
+
+    if (!report) {
+      throw createHttpError(404, 'Архивный отчет не найден')
+    }
+
+    permanentlyDeleteArchivedReport(archivedReportId)
+    sendJson(response, { ok: true })
     return true
   }
 
@@ -420,6 +537,129 @@ async function handleApiRequest(request, response, requestUrl, db) {
       response,
       visibleReports(db).filter((report) => report.workerAccountId === account.id),
     )
+    return true
+  }
+
+  const generatedDocumentMatch = pathname.match(/^\/api\/reports\/([^/]+)\/documents\/generate$/)
+
+  if (generatedDocumentMatch && method === 'POST') {
+    const reportId = decodeURIComponent(generatedDocumentMatch[1])
+    const account = requireAccount(request, db)
+    const draft = requireReportAccess(db, reportId, account)
+
+    if (draft.status !== 'draft' && draft.status !== 'ready' && draft.status !== 'exported') {
+      throw createHttpError(409, 'Для этого отчёта нельзя сформировать PDF')
+    }
+
+    if (draft.status === 'draft') {
+      if (account.role !== 'worker') {
+        throw createHttpError(403, 'Предварительный PDF доступен только инспектору')
+      }
+
+      const reportPhotos = db.productPhotos.filter(
+        (photo) => photo.draftId === reportId && isVisibleEntity(photo),
+      )
+      validateReadyReport(draft, reportPhotos)
+    }
+
+    const template =
+      draft.templateSnapshot ??
+      db.documentTemplates.find((item) => item.id === draft.templateId && isVisibleEntity(item)) ??
+      db.documentTemplates.find(
+        (item) => item.id === 'document-template-quality-standard' && isVisibleEntity(item),
+      ) ??
+      db.documentTemplates.find(
+        (item) => item.status === 'active' && isVisibleEntity(item),
+      )
+
+    if (!template) {
+      throw createHttpError(409, 'Макет отчёта не найден')
+    }
+
+    const photos = db.productPhotos
+      .filter((photo) => photo.draftId === reportId && isVisibleEntity(photo))
+      .sort((first, second) => first.sortOrder - second.sortOrder)
+    const binary = await generateTemplateReportPdf({ report: draft, photos, template })
+
+    if (binary.byteLength > MAX_DOCUMENT_SIZE_BYTES) {
+      throw createHttpError(413, 'Сформированный PDF-файл слишком большой')
+    }
+
+    const generatedAt = Date.now()
+    const document = stampEntity({
+      id: createEntityId('document'),
+      draftId: reportId,
+      fileName: createGeneratedPdfFileName(draft, generatedAt),
+      mimeType: 'application/pdf',
+      blobBase64: binary.toString('base64'),
+      generatedAt,
+      contentHash: createHash('sha256').update(binary).digest('hex'),
+      _deletedAt: undefined,
+    })
+    db.generatedDocuments = db.generatedDocuments.filter(
+      (existingDocument) => existingDocument.draftId !== reportId,
+    )
+
+    db.generatedDocuments = upsert(db.generatedDocuments, document)
+
+    if (draft.status !== 'draft') {
+      db.reportDrafts = upsert(
+        db.reportDrafts,
+        stampEntity({
+          ...draft,
+          status: 'exported',
+          updatedAt: Date.now(),
+        }),
+      )
+    }
+
+    writeDbReplacingGeneratedDocuments(db, reportId)
+    sendJson(response, document, 201)
+    return true
+  }
+
+  const submitReportMatch = pathname.match(/^\/api\/reports\/([^/]+)\/submit$/)
+
+  if (submitReportMatch && method === 'POST') {
+    const reportId = decodeURIComponent(submitReportMatch[1])
+    const account = requireAccount(request, db)
+    const draft = requireReportAccess(db, reportId, account)
+
+    if (account.role !== 'worker') {
+      throw createHttpError(403, 'Отправить отчёт может только инспектор')
+    }
+
+    if (draft.status !== 'draft') {
+      throw createHttpError(409, 'Отчёт уже отправлен администратору')
+    }
+
+    const photos = db.productPhotos
+      .filter((photo) => photo.draftId === reportId && isVisibleEntity(photo))
+      .sort((first, second) => first.sortOrder - second.sortOrder)
+    const documents = db.generatedDocuments
+      .filter((document) => document.draftId === reportId && isVisibleEntity(document))
+      .sort((first, second) => first.generatedAt - second.generatedAt)
+    const latestDocument = documents.at(-1)
+
+    validateReadyReport(draft, photos)
+
+    if (!latestDocument || latestDocument.generatedAt < draft.updatedAt) {
+      throw createHttpError(409, 'Сначала сформируйте и проверьте актуальный PDF')
+    }
+
+    const submittedDraft = stampEntity({
+      ...draft,
+      status: 'exported',
+      updatedAt: Date.now(),
+    })
+
+    db.reportDrafts = upsert(db.reportDrafts, submittedDraft)
+    writeDb(db)
+    sendJson(response, {
+      draft: submittedDraft,
+      photos,
+      documents,
+    })
     return true
   }
 
@@ -447,7 +687,9 @@ async function handleApiRequest(request, response, requestUrl, db) {
     }
 
     const binary = decodeBase64(input.blobBase64, MAX_DOCUMENT_SIZE_BYTES, 'Документ')
-    const mimeType = String(input.mimeType ?? '').trim().toLowerCase()
+    const mimeType = String(input.mimeType ?? '')
+      .trim()
+      .toLowerCase()
 
     if (mimeType !== 'application/pdf') {
       throw createHttpError(400, 'Поддерживаются только PDF-документы')
@@ -476,18 +718,47 @@ async function handleApiRequest(request, response, requestUrl, db) {
     return true
   }
 
+  const photoPreviewsMatch = pathname.match(/^\/api\/reports\/([^/]+)\/photo-previews$/)
+
+  if (photoPreviewsMatch && method === 'GET') {
+    const reportId = decodeURIComponent(photoPreviewsMatch[1])
+    const account = requireAccount(request, db)
+    const draft = requireReportAccess(db, reportId, account, account.role === 'admin')
+    const includeArchivedPhotos = account.role === 'admin' && draft.status === 'archived'
+
+    sendJson(
+      response,
+      db.productPhotos
+        .filter(
+          (photo) =>
+            photo.draftId === reportId && (includeArchivedPhotos || isVisibleEntity(photo)),
+        )
+        .sort((first, second) => first.sortOrder - second.sortOrder)
+        .slice(0, 3),
+    )
+    return true
+  }
+
   const reportId = matchId(pathname, '/api/reports/')
 
   if (reportId && method === 'GET') {
     const account = requireAccount(request, db)
-    const draft = requireReportAccess(db, reportId, account)
+    const draft = requireReportAccess(db, reportId, account, account.role === 'admin')
+    const includeArchivedResources = account.role === 'admin' && draft.status === 'archived'
     sendJson(response, {
       draft,
       photos: db.productPhotos
-        .filter((photo) => photo.draftId === reportId && isVisibleEntity(photo))
+        .filter(
+          (photo) =>
+            photo.draftId === reportId && (includeArchivedResources || isVisibleEntity(photo)),
+        )
         .sort((first, second) => first.sortOrder - second.sortOrder),
       documents: db.generatedDocuments
-        .filter((document) => document.draftId === reportId && isVisibleEntity(document))
+        .filter(
+          (document) =>
+            document.draftId === reportId &&
+            (includeArchivedResources || isVisibleEntity(document)),
+        )
         .sort((first, second) => first.generatedAt - second.generatedAt),
     })
     return true
@@ -552,9 +823,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const deletedAt = Date.now()
 
     db.productPhotos = db.productPhotos.map((photo) =>
-      photo.draftId === reportId &&
-      isVisibleEntity(photo) &&
-      !incomingPhotoIds.has(photo.id)
+      photo.draftId === reportId && isVisibleEntity(photo) && !incomingPhotoIds.has(photo.id)
         ? stampEntity({ ...photo, _deletedAt: deletedAt })
         : photo,
     )
@@ -575,14 +844,21 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const savedPhotos = db.productPhotos
       .filter((photo) => photo.draftId === reportId && isVisibleEntity(photo))
       .sort((first, second) => first.sortOrder - second.sortOrder)
-    const productId = String(incomingDraft.productId ?? '').trim()
+    const hasProductField = templateHasProductField(template)
+    const productId = hasProductField ? String(incomingDraft.productId ?? '').trim() : ''
     const productOption = db.reportTemplateOptions.find(
       (option) =>
         option.field === 'productId' && option.value === productId && isVisibleEntity(option),
     )
-    const productName = String(
-      productOption?.label ?? incomingDraft.productName ?? incomingDraft.mainInfo?.productName ?? '',
-    ).trim()
+    const selectedProductName = hasProductField
+      ? String(
+          productOption?.label ??
+            incomingDraft.productName ??
+            incomingDraft.mainInfo?.productName ??
+            '',
+        ).trim()
+      : ''
+    const productName = productId && selectedProductName ? selectedProductName : template?.name ?? ''
     const mainInfo = normalizeJsonObject(incomingDraft.mainInfo, 'Основная информация')
 
     mainInfo.productName = productName
@@ -591,17 +867,25 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const draft = stampEntity({
       id: reportId,
       status,
-      ...(template ? { templateId: template.id, templateSnapshot: snapshotTemplate(template) } : {}),
+      ...(template
+        ? { templateId: template.id, templateSnapshot: snapshotTemplate(template) }
+        : {}),
       workerAccountId: account.id,
       productId,
       productName,
       inspectorName: account.fullName,
       mainInfo,
-      temperatureInfo: normalizeJsonObject(incomingDraft.temperatureInfo, 'Температурная информация'),
-      inspectionResults: normalizeJsonObject(incomingDraft.inspectionResults, 'Результаты инспекции'),
+      temperatureInfo: normalizeJsonObject(
+        incomingDraft.temperatureInfo,
+        'Температурная информация',
+      ),
+      inspectionResults: normalizeJsonObject(
+        incomingDraft.inspectionResults,
+        'Результаты инспекции',
+      ),
       descriptions: normalizeJsonObject(incomingDraft.descriptions, 'Описания'),
       expertConclusion: String(incomingDraft.expertConclusion ?? '').trim(),
-      customFieldValues: normalizeStringRecord(incomingDraft.customFieldValues),
+      customFieldValues: normalizeFieldValueRecord(incomingDraft.customFieldValues),
       sampling: normalizeJsonObject(incomingDraft.sampling, 'Параметры выборки'),
       signatures: normalizeJsonObject(incomingDraft.signatures, 'Подписи'),
       photoIds: savedPhotos.map((photo) => photo.id),
@@ -616,8 +900,20 @@ async function handleApiRequest(request, response, requestUrl, db) {
       validateReadyReport(draft, savedPhotos)
     }
 
+    const invalidatesGeneratedDocuments = status === 'draft' && Boolean(existingDraft)
+
+    if (invalidatesGeneratedDocuments) {
+      db.generatedDocuments = db.generatedDocuments.filter(
+        (document) => document.draftId !== reportId,
+      )
+    }
+
     db.reportDrafts = upsert(db.reportDrafts, draft)
-    writeDb(db)
+    if (invalidatesGeneratedDocuments) {
+      writeDbReplacingGeneratedDocuments(db, reportId)
+    } else {
+      writeDb(db)
+    }
     sendJson(response, {
       draft,
       photos: savedPhotos,
@@ -632,6 +928,10 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const account = requireAccount(request, db)
     const draft = requireReportAccess(db, reportId, account)
 
+    if (draft.status === 'archived') {
+      throw createHttpError(409, 'Отчет уже находится в архиве')
+    }
+
     if (account.role === 'worker' && draft.status !== 'draft') {
       throw createHttpError(409, 'Работник может удалить только черновик')
     }
@@ -640,7 +940,13 @@ async function handleApiRequest(request, response, requestUrl, db) {
 
     db.reportDrafts = upsert(
       db.reportDrafts,
-      stampEntity({ ...draft, status: 'archived', updatedAt: deletedAt, _deletedAt: deletedAt }),
+      stampEntity({
+        ...draft,
+        status: 'archived',
+        archivedFromStatus: draft.status,
+        updatedAt: deletedAt,
+        _deletedAt: deletedAt,
+      }),
     )
     db.productPhotos = db.productPhotos.map((photo) =>
       photo.draftId === reportId ? stampEntity({ ...photo, _deletedAt: deletedAt }) : photo,
@@ -682,10 +988,7 @@ function normalizePhotoInput(input, index, reportId, storedPhotos, templatePhoto
   let templateFieldId
 
   if (requestedTemplateFieldId) {
-    templateFieldId = normalizeEntityId(
-      requestedTemplateFieldId,
-      'Идентификатор поля фотографии',
-    )
+    templateFieldId = normalizeEntityId(requestedTemplateFieldId, 'Идентификатор поля фотографии')
 
     if (!templatePhotoFieldIds.has(templateFieldId)) {
       throw createHttpError(400, 'Поле фотографии отсутствует в выбранном макете')
@@ -694,14 +997,15 @@ function normalizePhotoInput(input, index, reportId, storedPhotos, templatePhoto
     templateFieldId = templatePhotoFieldIds.values().next().value
   }
 
-  const mimeType = String(input.mimeType ?? existing?.mimeType ?? '').trim().toLowerCase()
+  const mimeType = String(input.mimeType ?? existing?.mimeType ?? '')
+    .trim()
+    .toLowerCase()
 
   if (!mimeType.startsWith('image/')) {
     throw createHttpError(400, 'В отчет можно добавить только изображение')
   }
 
-  const blobBase64 =
-    typeof input.blobBase64 === 'string' ? input.blobBase64 : existing?.blobBase64
+  const blobBase64 = typeof input.blobBase64 === 'string' ? input.blobBase64 : existing?.blobBase64
 
   if (!blobBase64) {
     throw createHttpError(400, 'Содержимое фотографии обязательно')
@@ -723,7 +1027,9 @@ function normalizePhotoInput(input, index, reportId, storedPhotos, templatePhoto
     mimeType,
     size: binary.byteLength,
     blobBase64,
-    caption: String(input.caption ?? existing?.caption ?? '').trim().slice(0, 2000),
+    caption: String(input.caption ?? existing?.caption ?? '')
+      .trim()
+      .slice(0, 2000),
     sortOrder,
     createdAt: existing?.createdAt ?? Date.now(),
   }
@@ -749,12 +1055,17 @@ function resolveReportTemplate(db, requestedTemplateId, existingDraft) {
   if (
     existingDraft?.templateId === templateId &&
     isPlainObject(existingDraft.templateSnapshot) &&
-    Array.isArray(existingDraft.templateSnapshot.sections)
+    Array.isArray(
+      existingDraft.templateSnapshot.inputSchema?.steps ?? existingDraft.templateSnapshot.sections,
+    )
   ) {
+    const sections = getTemplateSteps(existingDraft.templateSnapshot)
     return {
       id: templateId,
       name: existingDraft.templateSnapshot.name,
-      sections: existingDraft.templateSnapshot.sections,
+      inputSchema: existingDraft.templateSnapshot.inputSchema ?? { version: 1, steps: sections },
+      renderSpec: existingDraft.templateSnapshot.renderSpec ?? createDefaultRenderSpec(sections),
+      sections,
     }
   }
 
@@ -762,16 +1073,24 @@ function resolveReportTemplate(db, requestedTemplateId, existingDraft) {
 }
 
 function snapshotTemplate(template) {
+  const sections = getTemplateSteps(template)
+
   return {
     templateId: template.id,
     name: String(template.name ?? ''),
-    sections: structuredClone(template.sections),
+    inputSchema: structuredClone(template.inputSchema ?? { version: 1, steps: sections }),
+    renderSpec: structuredClone(template.renderSpec ?? createDefaultRenderSpec(sections)),
+    sections: structuredClone(sections),
   }
+}
+
+function getTemplateSteps(template) {
+  return template?.inputSchema?.steps ?? template?.sections ?? []
 }
 
 function getTemplatePhotoFieldIds(template) {
   return new Set(
-    (template?.sections ?? []).flatMap((section) =>
+    getTemplateSteps(template).flatMap((section) =>
       (section.fields ?? [])
         .filter((field) => field.type === 'photo' || field.dataPath === 'photos')
         .map((field) => field.id),
@@ -779,11 +1098,16 @@ function getTemplatePhotoFieldIds(template) {
   )
 }
 
+function templateHasProductField(template) {
+  return getTemplateSteps(template).some((section) =>
+    (section.fields ?? []).some(
+      (field) => field.dataPath === 'productId' || field.dataPath === 'mainInfo.productName',
+    ),
+  )
+}
+
 function validateReadyReport(draft, photos) {
-  const requiredValues = [
-    ['товар', draft.productId],
-    ['имя инспектора', draft.inspectorName],
-  ]
+  const requiredValues = [['имя инспектора', draft.inspectorName]]
 
   for (const [label, value] of requiredValues) {
     if (!hasValue(value)) {
@@ -791,16 +1115,16 @@ function validateReadyReport(draft, photos) {
     }
   }
 
-  if (!draft.templateSnapshot?.sections?.length) {
+  if (!getTemplateSteps(draft.templateSnapshot).length) {
     throw createHttpError(400, 'Чтобы отправить отчет, выберите действующий макет')
   }
 
   const photoFieldIds = getTemplatePhotoFieldIds(draft.templateSnapshot)
   const firstPhotoFieldId = photoFieldIds.values().next().value
 
-  for (const section of draft.templateSnapshot.sections) {
+  for (const section of getTemplateSteps(draft.templateSnapshot)) {
     for (const field of section.fields ?? []) {
-      if (!field.required) {
+      if (!field.required || isProductTemplateField(field)) {
         continue
       }
 
@@ -811,6 +1135,10 @@ function validateReadyReport(draft, photos) {
       }
     }
   }
+}
+
+function isProductTemplateField(field) {
+  return field.dataPath === 'productId' || field.dataPath === 'mainInfo.productName'
 }
 
 function getReportFieldValue(draft, photos, field, firstPhotoFieldId) {
@@ -840,7 +1168,7 @@ function getReportFieldValue(draft, photos, field, firstPhotoFieldId) {
 }
 
 function applyInspectorSignatureValues(draft, template) {
-  const signatureFields = (template?.sections ?? []).flatMap((section) =>
+  const signatureFields = getTemplateSteps(template).flatMap((section) =>
     (section.fields ?? []).filter((field) => field.type === 'signature'),
   )
 
@@ -871,6 +1199,14 @@ function hasValue(value) {
     return value.trim().length > 0
   }
 
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (isPlainObject(value)) {
+    return Object.values(value).some(hasValue)
+  }
+
   return value !== undefined && value !== null
 }
 
@@ -882,7 +1218,7 @@ function normalizeJsonObject(value, label) {
   return structuredClone(value)
 }
 
-function normalizeStringRecord(value) {
+function normalizeFieldValueRecord(value) {
   if (value === undefined || value === null) {
     return {}
   }
@@ -891,9 +1227,110 @@ function normalizeStringRecord(value) {
     throw createHttpError(400, 'Некорректные дополнительные поля')
   }
 
-  return Object.fromEntries(
-    Object.entries(value).map(([key, fieldValue]) => [key, String(fieldValue ?? '').trim()]),
+  const serialized = JSON.stringify(value)
+
+  if (serialized.length > 1_000_000) {
+    throw createHttpError(413, 'Дополнительные поля отчёта слишком большие')
+  }
+
+  return JSON.parse(serialized)
+}
+
+function validateInputSchema(value) {
+  if (!isPlainObject(value) || Number(value.version ?? 1) !== 1) {
+    throw createHttpError(400, 'Некорректная схема формы инспектора')
+  }
+
+  return {
+    version: 1,
+    steps: validateTemplateSections(value.steps),
+  }
+}
+
+function validateRenderSpec(value, inputSchema) {
+  const sectionIds = new Set(inputSchema.steps.map((section) => section.id))
+  const fallback = createDefaultRenderSpec(inputSchema.steps)
+  const fallbackBySectionId = new Map(
+    fallback.sections.map((section) => [section.inputSectionId, section]),
   )
+  const candidate = value ?? fallback
+
+  if (!isPlainObject(candidate) || !Array.isArray(candidate.sections)) {
+    throw createHttpError(400, 'Некорректная схема печатного PDF')
+  }
+
+  const renderSections = candidate.sections.map((section, sectionIndex) => {
+    if (!isPlainObject(section) || !sectionIds.has(section.inputSectionId)) {
+      throw createHttpError(400, 'Печатный раздел не связан с формой инспектора')
+    }
+
+    const inputSection = inputSchema.steps.find((item) => item.id === section.inputSectionId)
+    const inputPaths = new Set((inputSection?.fields ?? []).map((field) => field.dataPath))
+    const fields = Array.isArray(section.fields) ? section.fields : []
+
+    for (const field of fields) {
+      if (!isPlainObject(field) || !inputPaths.has(field.dataPath)) {
+        throw createHttpError(400, 'Печатное поле не связано с inputSchema')
+      }
+    }
+
+    return {
+      id: normalizeEntityId(
+        section.id ?? `render-${section.inputSectionId}`,
+        'Идентификатор печатного раздела',
+      ),
+      inputSectionId: section.inputSectionId,
+      title: String(section.title ?? inputSection?.title ?? '').trim(),
+      pageBreakBefore: sectionIndex > 0 && Boolean(section.pageBreakBefore),
+      columns: Number(section.columns) === 2 ? 2 : 1,
+      showDescription: section.showDescription !== false,
+      hidden: Boolean(section.hidden),
+      fields: structuredClone(
+        fields.length ? fields : (fallbackBySectionId.get(section.inputSectionId)?.fields ?? []),
+      ),
+    }
+  })
+
+  return {
+    version: 1,
+    mode: 'flow',
+    layout: 'branded',
+    pageSize: 'A4',
+    documentTitle: String(candidate.documentTitle ?? '').trim(),
+    sections: renderSections,
+  }
+}
+
+function createDefaultRenderSpec(sections) {
+  return {
+    version: 1,
+    mode: 'flow',
+    layout: 'branded',
+    pageSize: 'A4',
+    documentTitle: '',
+    sections: sections.map((section) => ({
+      id: `render-${section.id}`,
+      inputSectionId: section.id,
+      title: section.title,
+      pageBreakBefore: false,
+      columns: 1,
+      showDescription: true,
+      hidden: false,
+      fields: (section.fields ?? []).map((field) => ({
+        dataPath: field.dataPath,
+        label: field.label,
+        width: field.width ?? 'full',
+        display:
+          field.type === 'table'
+            ? 'table'
+            : field.type === 'checkbox' || field.type === 'passFail'
+              ? 'checkmark'
+              : 'value',
+        hideWhenEmpty: false,
+        hidden: false,
+      })),
+    })),
+  }
 }
 
 function validateTemplateSections(value) {
@@ -904,6 +1341,23 @@ function validateTemplateSections(value) {
   let fieldCount = 0
   const sectionIds = new Set()
   const fieldIds = new Set()
+  const fieldsByPath = new Map()
+  const supportedFieldTypes = new Set([
+    'text',
+    'number',
+    'date',
+    'time',
+    'select',
+    'radio',
+    'checkbox',
+    'textarea',
+    'measurement',
+    'passFail',
+    'table',
+    'calculated',
+    'photo',
+    'signature',
+  ])
 
   for (const section of value) {
     if (!isPlainObject(section) || !Array.isArray(section.fields)) {
@@ -932,12 +1386,64 @@ function validateTemplateSections(value) {
       }
 
       fieldIds.add(fieldId)
-      normalizeRequiredText(field.dataPath, 'Путь поля')
+      const dataPath = normalizeRequiredText(field.dataPath, 'Путь поля')
       normalizeRequiredText(field.label, 'Название поля')
+
+      if (fieldsByPath.has(dataPath)) {
+        throw createHttpError(400, 'Пути полей макета не должны повторяться')
+      }
+
+      fieldsByPath.set(dataPath, field)
+
+      if (!supportedFieldTypes.has(field.type)) {
+        throw createHttpError(400, `Тип поля «${field.type}» не поддерживается`)
+      }
 
       if (field.options !== undefined && !Array.isArray(field.options)) {
         throw createHttpError(400, 'Некорректные варианты поля макета')
       }
+
+      if (field.type === 'table') {
+        if (!Array.isArray(field.tableColumns) || !Array.isArray(field.tableRows)) {
+          throw createHttpError(400, 'Таблица должна содержать колонки и строки')
+        }
+
+        if (field.tableColumns.length > 30 || field.tableRows.length > 200) {
+          throw createHttpError(400, 'Таблица макета слишком большая')
+        }
+      }
+    }
+  }
+
+  for (const field of fieldsByPath.values()) {
+    if (field.type !== 'calculated') {
+      continue
+    }
+
+    const calculation = field.calculation
+
+    if (
+      !isPlainObject(calculation) ||
+      !['sum', 'difference', 'average'].includes(calculation.operator) ||
+      !Array.isArray(calculation.sourcePaths) ||
+      calculation.sourcePaths.length === 0 ||
+      calculation.sourcePaths.some((path) => typeof path !== 'string' || !fieldsByPath.has(path)) ||
+      new Set(calculation.sourcePaths).size !== calculation.sourcePaths.length ||
+      (calculation.precision !== undefined &&
+        (!Number.isInteger(calculation.precision) ||
+          calculation.precision < 0 ||
+          calculation.precision > 10))
+    ) {
+      throw createHttpError(400, 'Некорректная формула вычисляемого поля')
+    }
+
+    if (
+      calculation.sourcePaths.some((path) => {
+        const sourceField = fieldsByPath.get(path)
+        return sourceField.type !== 'number' && sourceField.type !== 'measurement'
+      })
+    ) {
+      throw createHttpError(400, 'Источники вычисляемого поля должны быть числовыми')
     }
   }
 
@@ -1035,8 +1541,13 @@ function visibleReports(db) {
     .sort((first, second) => second.updatedAt - first.updatedAt)
 }
 
-function requireReportAccess(db, reportId, account) {
-  const draft = db.reportDrafts.find((item) => item.id === reportId && isVisibleEntity(item))
+function requireReportAccess(db, reportId, account, includeArchived = false) {
+  const draft = db.reportDrafts.find(
+    (item) =>
+      item.id === reportId &&
+      (isVisibleEntity(item) ||
+        (includeArchived && item.status === 'archived' && item._deletedAt !== undefined)),
+  )
 
   if (!draft) {
     throw createHttpError(404, 'Отчет не найден')
@@ -1122,10 +1633,7 @@ function ensureCanChangeAdmin(db, existing, next, currentAccountId) {
 
   const otherActiveAdmins = db.accounts.filter(
     (item) =>
-      item.id !== existing.id &&
-      item.role === 'admin' &&
-      item.isActive &&
-      isVisibleEntity(item),
+      item.id !== existing.id && item.role === 'admin' && item.isActive && isVisibleEntity(item),
   )
 
   if (otherActiveAdmins.length === 0) {
@@ -1178,8 +1686,22 @@ function matchId(pathname, prefix) {
 }
 
 function getReportResourceId(pathname) {
-  const match = pathname.match(/^\/api\/reports\/([^/]+)(?:\/documents)?$/)
+  const match = pathname.match(
+    /^\/api\/reports\/([^/]+)(?:\/documents(?:\/generate)?|\/photo-previews|\/submit)?$/,
+  )
   return match ? decodeURIComponent(match[1]) : undefined
+}
+
+function createGeneratedPdfFileName(report, generatedAt) {
+  const rawBaseName = String(report.mainInfo?.orderNumber || report.id || 'quality-report').trim()
+  const baseName = Array.from(rawBaseName, (character) =>
+    character.charCodeAt(0) <= 31 ? '_' : character,
+  )
+    .join('')
+    .replace(/[<>:"/\\|?*]/g, '_')
+  const timestamp = new Date(generatedAt).toISOString().replace(/[-:]/g, '').slice(0, 13)
+
+  return `${baseName || 'quality-report'}-${timestamp}.pdf`
 }
 
 async function readJsonBody(request) {
@@ -1261,10 +1783,34 @@ function createSeedAccounts() {
 function createSeedTemplateOptions() {
   const now = Date.now()
   const entries = [
-    ['template-product-sweet-red-pepper', 'productId', 'Перец красный сладкий 1 кг', 'sweet-red-pepper', 'Овощи'],
-    ['template-product-fresh-vegetables', 'productId', 'Свежие овощи', 'fresh-vegetables', 'Склад холодного хранения'],
-    ['template-product-dairy', 'productId', 'Молочная продукция', 'dairy', 'Склад холодного хранения'],
-    ['template-product-frozen-meat', 'productId', 'Замороженное мясо', 'frozen-meat', 'Морозильный склад'],
+    [
+      'template-product-sweet-red-pepper',
+      'productId',
+      'Перец красный сладкий 1 кг',
+      'sweet-red-pepper',
+      'Овощи',
+    ],
+    [
+      'template-product-fresh-vegetables',
+      'productId',
+      'Свежие овощи',
+      'fresh-vegetables',
+      'Склад холодного хранения',
+    ],
+    [
+      'template-product-dairy',
+      'productId',
+      'Молочная продукция',
+      'dairy',
+      'Склад холодного хранения',
+    ],
+    [
+      'template-product-frozen-meat',
+      'productId',
+      'Замороженное мясо',
+      'frozen-meat',
+      'Морозильный склад',
+    ],
     ['template-product-dry-goods', 'productId', 'Сухие товары', 'dry-goods', 'Основной склад'],
     ['template-package-1kg', 'packageName', '1 кг', '1 кг', 'Фасовка'],
     ['template-package-5kg', 'packageName', '5 кг', '5 кг', 'Фасовка'],
@@ -1330,6 +1876,7 @@ async function serveStaticFile(pathname, response) {
     '.css': 'text/css; charset=utf-8',
     '.html': 'text/html; charset=utf-8',
     '.js': 'text/javascript; charset=utf-8',
+    '.mjs': 'text/javascript; charset=utf-8',
     '.json': 'application/json; charset=utf-8',
     '.png': 'image/png',
     '.svg': 'image/svg+xml',

@@ -1,480 +1,350 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+  GlobalWorkerOptions,
+  getDocument,
+  type PDFDocumentLoadingTask,
+  type PDFDocumentProxy,
+} from 'pdfjs-dist'
+import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
-import { generateQualityReportPdf } from '@/shared/documents/quality-report-pdf'
 import { useAuthStore } from '@/stores/auth.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
-import type { ReportPhotoCategory, ReportSamplePoint } from '@/types/report'
+import type { GeneratedDocument } from '@/types/report'
 
-interface StoredPhotoPreview {
-  id: string
-  url: string
-  fileName: string
-  caption: string
-  templateFieldId?: string
-  category: ReportPhotoCategory
-}
+GlobalWorkerOptions.workerPort = new PdfWorker()
 
-interface PhotoDisplayGroup {
-  id: string
-  title: string
-  subtitle: string
-  photos: StoredPhotoPreview[]
-}
-
-const props = defineProps<{
-  reportId: string
-}>()
-
+const props = defineProps<{ reportId: string }>()
 const reportDraftStore = useReportDraftStore()
 const authStore = useAuthStore()
 const router = useRouter()
-const photoPreviews = ref<StoredPhotoPreview[]>([])
 
-const photoCategories: Array<{ id: ReportPhotoCategory; title: string; subtitle: string }> = [
-  { id: 'vehicle', title: 'Vehicle', subtitle: 'Транспортное средство' },
-  { id: 'temperature', title: 'Temperature', subtitle: 'Температура' },
-  { id: 'facade', title: 'Facade', subtitle: 'Аллея' },
-  { id: 'selection', title: 'Selection', subtitle: 'ГСЗ' },
-  { id: 'goods', title: 'Goods', subtitle: 'Общий вид товара' },
-  { id: 'destructiveTesting', title: 'Destructive testing', subtitle: 'Разрушающий контроль' },
-  { id: 'caliber', title: 'Caliber', subtitle: 'Калибр' },
-  { id: 'waste', title: 'Waste', subtitle: 'Отход' },
-  { id: 'notStandard', title: 'Not correspond to the standard', subtitle: 'Нестандарт' },
-]
+const viewerRef = ref<HTMLElement | null>(null)
+const displayedDocument = ref<GeneratedDocument | null>(null)
+const pageNumbers = ref<number[]>([])
+const isPreparingDocument = ref(false)
+const isRenderingPdf = ref(false)
+const isSubmittingReport = ref(false)
+const renderedPageCount = ref(0)
+const previewError = ref('')
+const canvasByPage = new Map<number, HTMLCanvasElement>()
 
-const photoDisplayGroups = computed<PhotoDisplayGroup[]>(() => {
-  const photoFields = (reportDraftStore.selectedReport?.templateSnapshot?.sections ?? []).flatMap(
-    (section) =>
-      [...section.fields]
-        .sort((firstField, secondField) => firstField.sortOrder - secondField.sortOrder)
-        .filter((field) => field.type === 'photo' || field.dataPath === 'photos'),
-  )
+let pdfDocument: PDFDocumentProxy | null = null
+let pdfLoadingTask: PDFDocumentLoadingTask | null = null
+let resizeObserver: ResizeObserver | null = null
+let resizeTimer: ReturnType<typeof setTimeout> | undefined
+let renderQueue: Promise<void> = Promise.resolve()
+let documentGeneration = 0
 
-  if (photoFields.length) {
-    return photoFields.map((field, fieldIndex) => ({
-      id: field.id,
-      title: field.label,
-      subtitle: field.helpText,
-      photos: photoPreviews.value.filter(
-        (photo) =>
-          photo.templateFieldId === field.id ||
-          (!photo.templateFieldId && fieldIndex === 0),
-      ),
-    }))
-  }
-
-  return photoCategories.map((category) => ({
-    ...category,
-    photos: photoPreviews.value.filter((photo) => photo.category === category.id),
-  }))
-})
-
-const savedAtLabel = computed(() => {
-  if (!reportDraftStore.selectedReport) {
-    return ''
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'long',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(reportDraftStore.selectedReport.updatedAt)
-})
-const backRoute = computed(() =>
-  authStore.isAdmin ? { name: 'admin-reports' } : { name: 'worker-reports' },
+const report = computed(() => reportDraftStore.selectedReport)
+const isInspectorReview = computed(
+  () => authStore.isWorker && report.value?.status === 'draft',
 )
-
-const mainRows = computed(() => {
-  const report = reportDraftStore.selectedReport
-
-  if (!report) {
-    return []
+const backRoute = computed(() => {
+  if (authStore.isAdmin && report.value?.status === 'archived') {
+    return { name: 'admin-report-archive' }
   }
 
-  return [
-    ['Number of order / Номер заказа', report.mainInfo.orderNumber],
-    ['ZOST', report.mainInfo.zost],
-    ['Shipper / Поставщик', report.mainInfo.shipper],
-    ['Trailer N / Прицеп N', report.mainInfo.trailerNumber],
-    ['Place of survey / Место инспекции', report.mainInfo.placeOfSurvey],
-    ['Name of product / Наименование товара', report.mainInfo.productName],
-    ['Package / Фасовка', report.mainInfo.packageName],
-    ['PLU', report.mainInfo.plu],
-    ['Date of opening / Дата открытия', formatDate(report.mainInfo.openingDate)],
-    ['Date of survey / Дата инспекции', formatDate(report.mainInfo.surveyDate)],
-    ['Kind of packing / Вид упаковки', report.mainInfo.packingKind],
-    ['Marking of boxes / Маркировка на коробках', report.mainInfo.boxMarking],
-  ]
+  return authStore.isAdmin ? { name: 'admin-reports' } : { name: 'worker-reports' }
 })
-
-const temperatureRows = computed(() => {
-  const report = reportDraftStore.selectedReport
-
-  if (!report) {
-    return []
-  }
-
-  return [
-    [
-      'Storage temperature / Рекомендованная температура',
-      report.temperatureInfo.storageTemperature,
-    ],
-    [
-      'Of pulp at the time of opening / Пульпа при открытии',
-      report.temperatureInfo.pulpTemperature,
-    ],
-    ['Temperature violation / Нарушение', report.temperatureInfo.temperatureViolation],
-    ['Seal / Пломба', report.temperatureInfo.sealNumber],
-    ['Thermographs presence / Наличие термографов', report.temperatureInfo.thermographPresence],
-    ['Thermographs violation / Нарушение термографов', report.temperatureInfo.thermographViolation],
-  ]
-})
-
-const resultRows = computed(() => {
-  const report = reportDraftStore.selectedReport
-
-  if (!report) {
-    return []
-  }
-
-  return [
-    [
-      'Correspond to the 1st cat. / Соответствует 1 категории',
-      report.inspectionResults.firstCategoryPercent,
-    ],
-    [
-      'Not correspond to standard for 1st cat. / Нестандарт для 1 категории',
-      report.inspectionResults.firstCategoryNonStandardPercent,
-    ],
-    [
-      'Not correspond to standard for 2nd cat. / Нестандарт для 2 категории',
-      report.inspectionResults.secondCategoryNonStandardPercent,
-    ],
-    ['Waste / Отход', report.inspectionResults.wastePercent],
-    ['Density / Плотность', report.inspectionResults.density],
-    ['Brix / Сахар', report.inspectionResults.brix],
-    ['Caliber / Калибр', report.inspectionResults.caliber],
-    [
-      'Correspondence of caliber to passport / Соответствие калибра ПК',
-      report.inspectionResults.caliberPassportMatch,
-    ],
-    [
-      'Not correspond to caliber / Не соответствует калибру',
-      report.inspectionResults.caliberMismatch,
-    ],
-    ['Variety / Сорт', report.inspectionResults.variety],
-    [
-      'Correspondence of variety to passport / Соответствие сорта ПК',
-      report.inspectionResults.varietyPassportMatch,
-    ],
-  ]
-})
-
-watch(
-  () => reportDraftStore.selectedPhotos,
-  (photos, previousPhotos, onCleanup) => {
-    const previews = photos.map((photo) => ({
-      id: photo.id,
-      url: URL.createObjectURL(photo.blob),
-      fileName: photo.fileName,
-      caption: photo.caption,
-      templateFieldId: photo.templateFieldId,
-      category: photo.category,
-    }))
-
-    photoPreviews.value = previews
-
-    onCleanup(() => {
-      previews.forEach((photo) => URL.revokeObjectURL(photo.url))
-    })
-  },
-  { immediate: true },
-)
 
 onMounted(async () => {
   await reportDraftStore.loadReport(props.reportId)
 
   if (
     authStore.isWorker &&
-    reportDraftStore.selectedReport?.workerAccountId &&
-    reportDraftStore.selectedReport.workerAccountId !== authStore.currentAccount?.id
+    report.value?.workerAccountId &&
+    report.value.workerAccountId !== authStore.currentAccount?.id
   ) {
     await router.replace({ name: 'new-report' })
+    return
+  }
+
+  await prepareDocument()
+
+  if (viewerRef.value) {
+    resizeObserver = new ResizeObserver(scheduleRender)
+    resizeObserver.observe(viewerRef.value)
   }
 })
 
 onUnmounted(() => {
-  photoPreviews.value.forEach((photo) => URL.revokeObjectURL(photo.url))
+  documentGeneration += 1
+  resizeObserver?.disconnect()
+  if (resizeTimer) clearTimeout(resizeTimer)
+  void pdfLoadingTask?.destroy()
+  pdfDocument = null
+  pdfLoadingTask = null
+  canvasByPage.clear()
 })
 
-function splitSamplePoints(
-  points: ReportSamplePoint[],
-): [ReportSamplePoint[], ReportSamplePoint[]] {
-  const midpoint = Math.ceil(points.length / 2)
-
-  return [points.slice(0, midpoint), points.slice(midpoint)]
+function getLatestDocument(): GeneratedDocument | undefined {
+  return [...reportDraftStore.selectedDocuments].sort(
+    (first, second) => first.generatedAt - second.generatedAt,
+  ).at(-1)
 }
 
-function printReport(): void {
-  window.print()
-}
+async function prepareDocument(): Promise<void> {
+  if (!report.value || isPreparingDocument.value) return
 
-async function savePdfDocument(): Promise<void> {
-  const report = reportDraftStore.selectedReport
-
-  if (!report) {
-    return
-  }
-
-  reportDraftStore.clearError()
+  isPreparingDocument.value = true
+  previewError.value = ''
 
   try {
-    const pdfBlob = await generateQualityReportPdf(report, reportDraftStore.selectedPhotos)
-    const fileName = `${report.mainInfo.orderNumber || report.id}.pdf`
-    const document = await reportDraftStore.saveDocument(
-      report.id,
-      pdfBlob,
-      fileName,
-      'application/pdf',
-    )
+    let savedDocument = getLatestDocument()
 
-    if (document) {
-      downloadBlob(document.blob, document.fileName)
+    if (!savedDocument) {
+      if (report.value.status === 'draft') {
+        throw new Error('Сначала сформируйте PDF в редакторе отчёта')
+      }
+
+      if (report.value.status === 'archived') {
+        throw new Error('Для архивного отчёта PDF не найден')
+      }
+
+      savedDocument = (await reportDraftStore.generateDocument(report.value.id)) ?? undefined
+    }
+
+    if (!savedDocument) {
+      throw new Error(reportDraftStore.errorMessage || 'Не удалось получить серверный PDF')
+    }
+
+    displayedDocument.value = savedDocument
+    await loadPdf(savedDocument.blob)
+  } catch (error) {
+    previewError.value = getErrorMessage(error, 'Не удалось открыть PDF')
+  } finally {
+    isPreparingDocument.value = false
+  }
+}
+
+async function loadPdf(blob: Blob): Promise<void> {
+  const generation = ++documentGeneration
+  isRenderingPdf.value = true
+  renderedPageCount.value = 0
+  pageNumbers.value = []
+  canvasByPage.clear()
+
+  try {
+    await pdfLoadingTask?.destroy()
+    pdfDocument = null
+    pdfLoadingTask = null
+
+    const loadingTask = getDocument({ data: new Uint8Array(await blob.arrayBuffer()) })
+    const loadedDocument = await loadingTask.promise
+
+    if (generation !== documentGeneration) {
+      await loadingTask.destroy()
+      return
+    }
+
+    pdfLoadingTask = loadingTask
+    pdfDocument = loadedDocument
+    pageNumbers.value = Array.from({ length: loadedDocument.numPages }, (_, index) => index + 1)
+    await nextTick()
+    await queueRender()
+  } catch (error) {
+    previewError.value = getErrorMessage(error, 'PDF повреждён или имеет неподдерживаемый формат')
+  } finally {
+    if (generation === documentGeneration) isRenderingPdf.value = false
+  }
+}
+
+function setPageCanvas(element: unknown, pageNumber: number): void {
+  if (element instanceof HTMLCanvasElement) {
+    canvasByPage.set(pageNumber, element)
+  } else {
+    canvasByPage.delete(pageNumber)
+  }
+}
+
+function scheduleRender(): void {
+  if (!pdfDocument || !pageNumbers.value.length) return
+  if (resizeTimer) clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => void queueRender(), 160)
+}
+
+function queueRender(): Promise<void> {
+  renderQueue = renderQueue.catch(() => undefined).then(renderPages)
+  return renderQueue
+}
+
+async function renderPages(): Promise<void> {
+  const currentDocument = pdfDocument
+  const viewer = viewerRef.value
+
+  if (!currentDocument || !viewer) return
+
+  isRenderingPdf.value = true
+  renderedPageCount.value = 0
+  const availableWidth = Math.max(280, viewer.clientWidth - (window.innerWidth <= 620 ? 16 : 48))
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
+
+  try {
+    for (const pageNumber of pageNumbers.value) {
+      if (currentDocument !== pdfDocument) return
+
+      const canvas = canvasByPage.get(pageNumber)
+      if (!canvas) continue
+
+      const page = await currentDocument.getPage(pageNumber)
+      const baseViewport = page.getViewport({ scale: 1 })
+      const cssScale = Math.min(1.65, availableWidth / baseViewport.width)
+      const renderViewport = page.getViewport({ scale: cssScale * pixelRatio })
+      const context = canvas.getContext('2d', { alpha: false })
+      const targetWidth = Math.floor(renderViewport.width)
+      const targetHeight = Math.floor(renderViewport.height)
+
+      if (!context) throw new Error('Браузер не поддерживает отрисовку PDF в canvas')
+
+      if (canvas.width === targetWidth && canvas.height === targetHeight) {
+        renderedPageCount.value = pageNumber
+        page.cleanup()
+        continue
+      }
+
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+      canvas.style.width = `${Math.floor(renderViewport.width / pixelRatio)}px`
+      canvas.style.height = `${Math.floor(renderViewport.height / pixelRatio)}px`
+
+      await page.render({ canvas, canvasContext: context, viewport: renderViewport }).promise
+      renderedPageCount.value = pageNumber
+      page.cleanup()
     }
   } catch (error) {
-    reportDraftStore.setError(error)
+    previewError.value = getErrorMessage(error, 'Не удалось отрисовать страницы PDF')
+  } finally {
+    if (currentDocument === pdfDocument) isRenderingPdf.value = false
   }
 }
 
-function downloadBlob(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob)
+function savePdfDocument(): void {
+  if (!displayedDocument.value) return
+
+  const url = URL.createObjectURL(displayedDocument.value.blob)
   const link = document.createElement('a')
-
   link.href = url
-  link.download = fileName
+  link.download = displayedDocument.value.fileName
   link.click()
-  URL.revokeObjectURL(url)
+  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
-function formatDate(value: string): string {
-  if (!value) {
-    return '-'
-  }
+async function submitToAdministrator(): Promise<void> {
+  if (!report.value || !isInspectorReview.value || isSubmittingReport.value) return
 
-  return new Intl.DateTimeFormat('ru-RU').format(new Date(value))
+  const shouldSubmit = window.confirm(
+    'Отправить проверенный отчёт администратору?\n\nПосле отправки отчёт больше нельзя будет изменить.',
+  )
+
+  if (!shouldSubmit) return
+
+  isSubmittingReport.value = true
+  previewError.value = ''
+
+  try {
+    const submittedReport = await reportDraftStore.submitReport(report.value.id)
+
+    if (submittedReport) {
+      await router.push({ name: 'worker-reports' })
+    } else {
+      previewError.value = reportDraftStore.errorMessage || 'Не удалось отправить отчёт'
+    }
+  } finally {
+    isSubmittingReport.value = false
+  }
 }
 
-function displayValue(value: string | number | undefined): string {
-  if (value === undefined || value === '') {
-    return '-'
-  }
-
-  return String(value)
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
 }
 </script>
 
 <template>
   <main class="screen-page detail-page">
-    <div class="non-printable detail-toolbar">
-      <RouterLink class="back-link" :to="backRoute">
-        {{ authStore.isAdmin ? 'Назад к отчетам' : 'Назад к истории' }}
+    <section class="report-toolbar app-card">
+      <RouterLink
+        class="back-link"
+        :to="
+          isInspectorReview
+            ? { name: 'edit-report', params: { reportId } }
+            : backRoute
+        "
+      >
+        <span aria-hidden="true">←</span>
+        {{
+          isInspectorReview
+            ? 'Вернуться к редактированию'
+            : authStore.isAdmin
+              ? 'К списку отчётов'
+              : 'К истории'
+        }}
       </RouterLink>
-      <div class="detail-toolbar__actions">
-        <RouterLink
-          v-if="authStore.isWorker && reportDraftStore.selectedReport?.status === 'draft'"
-          class="secondary-button"
-          :to="{ name: 'edit-report', params: { reportId } }"
-        >
-          Редактировать
-        </RouterLink>
+
+      <div class="report-toolbar__actions">
         <button
           class="secondary-button"
           type="button"
-          :disabled="reportDraftStore.isSaving || !reportDraftStore.selectedReport"
+          :disabled="!displayedDocument || isPreparingDocument || isSubmittingReport"
           @click="savePdfDocument"
         >
-          {{ reportDraftStore.isSaving ? 'Сохраняем PDF...' : 'Скачать PDF' }}
+          Скачать PDF
         </button>
-        <button class="primary-button" type="button" @click="printReport">Печать / PDF</button>
-      </div>
-    </div>
-
-    <section v-if="reportDraftStore.selectedReport" class="non-printable screen-heading">
-      <div>
-        <p class="screen-kicker">Документ отчета</p>
-        <h1 class="screen-title">{{ reportDraftStore.selectedReport.productName }}</h1>
-        <p class="screen-subtitle">
-          {{
-            reportDraftStore.selectedReport.status === 'draft'
-              ? 'Черновик сохранен'
-              : 'Отправлен администратору'
-          }}: {{ savedAtLabel }} · документов:
-          {{ reportDraftStore.selectedDocuments.length }}
-        </p>
+        <button
+          v-if="isInspectorReview"
+          class="primary-button"
+          type="button"
+          :disabled="!displayedDocument || isPreparingDocument || isSubmittingReport"
+          @click="submitToAdministrator"
+        >
+          {{ isSubmittingReport ? 'Отправляем…' : 'Отправить администратору' }}
+        </button>
       </div>
     </section>
 
-    <p v-if="reportDraftStore.errorMessage" class="non-printable error-message">
-      {{ reportDraftStore.errorMessage }}
-    </p>
+    <section ref="viewerRef" class="pdf-viewer" aria-label="Просмотр PDF отчёта">
+      <div v-if="isPreparingDocument" class="viewer-state app-card">
+        <span class="viewer-spinner" aria-hidden="true" />
+        <strong>Получаем итоговый PDF с сервера…</strong>
+      </div>
 
-    <p
-      v-else-if="!reportDraftStore.isLoading && !reportDraftStore.selectedReport"
-      class="non-printable empty-state"
-    >
-      Отчет не найден или у вас нет доступа.
-    </p>
+      <div v-else-if="previewError" class="viewer-state viewer-state--error app-card">
+        <strong>Не удалось показать отчёт</strong>
+        <p>{{ previewError }}</p>
+        <RouterLink
+          v-if="report?.status === 'draft' && authStore.isWorker"
+          class="primary-button"
+          :to="{ name: 'edit-report', params: { reportId } }"
+        >
+          Вернуться к редактированию
+        </RouterLink>
+        <button v-else class="secondary-button" type="button" @click="prepareDocument">
+          Попробовать снова
+        </button>
+      </div>
 
-    <section v-if="reportDraftStore.selectedReport" class="print-report">
-      <article class="document-page">
-        <section class="document-title">
-          <h1>Quality inspection report</h1>
-          <p>Отчет об осмотре груза на качество</p>
+      <template v-else>
+        <div
+          v-if="isRenderingPdf"
+          class="render-progress"
+          role="status"
+          aria-live="polite"
+        >
+          Отрисовываем страницы: {{ renderedPageCount }} / {{ pageNumbers.length }}
+        </div>
+
+        <section
+          v-for="pageNumber in pageNumbers"
+          :key="pageNumber"
+          class="pdf-page"
+          :aria-label="`Страница ${pageNumber} из ${pageNumbers.length}`"
+        >
+          <canvas :ref="(element) => setPageCanvas(element, pageNumber)" />
+          <span class="pdf-page__number">{{ pageNumber }} / {{ pageNumbers.length }}</span>
         </section>
-
-        <table class="report-table">
-          <tbody>
-            <tr v-for="[label, value] in mainRows" :key="label">
-              <th>{{ label }}</th>
-              <td>{{ displayValue(value) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </article>
-
-      <article class="document-page">
-        <h2 class="section-title">
-          Data on temperature and seals / Данные по температуре и пломбам
-        </h2>
-        <table class="report-table">
-          <tbody>
-            <tr v-for="[label, value] in temperatureRows" :key="label">
-              <th>{{ label }}</th>
-              <td>{{ displayValue(value) }}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <h2 class="section-title section-title--spaced">
-          Results of inspection / Результаты инспекции
-        </h2>
-        <table class="report-table">
-          <tbody>
-            <tr v-for="[label, value] in resultRows" :key="label">
-              <th>{{ label }}</th>
-              <td>{{ displayValue(value) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </article>
-
-      <article class="document-page">
-        <h2 class="section-title">Description / Описание</h2>
-        <div class="description-list">
-          <p>
-            <strong>Not correspond to requirements of standard for 2nd class</strong>
-            {{ displayValue(reportDraftStore.selectedReport.descriptions.secondClassDefects) }}
-          </p>
-          <p>
-            <strong>Waste / Отход</strong>
-            {{ displayValue(reportDraftStore.selectedReport.descriptions.waste) }}
-          </p>
-          <p>
-            <strong>Not correspond to the CALIBER / Не соответствует калибру</strong>
-            {{ displayValue(reportDraftStore.selectedReport.descriptions.caliberMismatch) }}
-          </p>
-        </div>
-
-        <h2 class="section-title section-title--spaced">
-          Conclusion of Expert / Заключение эксперта
-        </h2>
-        <p class="conclusion">
-          {{ displayValue(reportDraftStore.selectedReport.expertConclusion) }}
-        </p>
-      </article>
-
-      <article class="document-page">
-        <h2 class="section-title">Random value generator / Генератор случайных значений</h2>
-        <div class="sample-grid">
-          <table
-            v-for="(sampleColumn, columnIndex) in splitSamplePoints(
-              reportDraftStore.selectedReport.sampling.points,
-            )"
-            :key="columnIndex"
-            class="report-table"
-          >
-            <thead>
-              <tr>
-                <th>Палета</th>
-                <th>Место</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="point in sampleColumn" :key="point.id">
-                <td>{{ point.pallet }}</td>
-                <td>{{ point.place }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </article>
-
-      <article
-        v-for="group in photoDisplayGroups"
-        :key="group.id"
-        class="document-page photo-page"
-      >
-        <h2 class="section-title">{{ group.title }}</h2>
-        <p v-if="group.subtitle" class="section-subtitle">{{ group.subtitle }}</p>
-        <figure v-for="photo in group.photos" :key="photo.id">
-          <img :src="photo.url" :alt="photo.fileName" />
-          <figcaption>{{ photo.caption || photo.fileName }}</figcaption>
-        </figure>
-        <p v-if="!group.photos.length" class="empty-document-block">
-          Фото не добавлены.
-        </p>
-      </article>
-
-      <article class="document-page">
-        <p class="final-note">
-          The photos attached show the amount of rotten and affected fruits as well as general cargo
-          condition.
-        </p>
-        <p class="final-note">
-          Прикрепленные фотографии показывают количество гнилых и пораженных плодов, а также общее
-          состояние груза.
-        </p>
-        <p class="final-note">
-          The report above reflects our findings at the time, date and place of inspection only and
-          does not refer to any other matter.
-        </p>
-        <table class="report-table signature-table">
-          <tbody>
-            <tr>
-              <th>Report issued / Отчет издан</th>
-              <td>{{ formatDate(reportDraftStore.selectedReport.signatures.reportIssuedDate) }}</td>
-            </tr>
-            <tr>
-              <th>Expert / Эксперт</th>
-              <td>{{ displayValue(reportDraftStore.selectedReport.signatures.expertName) }}</td>
-            </tr>
-            <tr>
-              <th>Retail's representative / Менеджер ОКК ТС</th>
-              <td>
-                {{
-                  displayValue(reportDraftStore.selectedReport.signatures.retailRepresentativeName)
-                }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </article>
+      </template>
     </section>
-
-    <p v-else class="empty-state">Отчет не найден или был удален.</p>
   </main>
 </template>
 
@@ -484,227 +354,205 @@ function displayValue(value: string | number | undefined): string {
   margin: 0 auto;
 }
 
-.detail-toolbar {
+.report-toolbar {
+  position: sticky;
+  z-index: 5;
+  top: 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 10px;
-  background: var(--color-surface);
-  box-shadow: 0 10px 24px var(--color-shadow);
+  gap: 16px;
+  padding: 12px 14px;
+  backdrop-filter: blur(14px);
 }
 
-.detail-toolbar__actions {
-  display: flex;
-  flex-wrap: wrap;
+.back-link,
+.secondary-button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
   gap: 8px;
-}
-
-.back-link {
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: var(--color-surface);
   color: var(--color-primary);
-  font-size: 0.9rem;
   font-weight: 850;
   text-decoration: none;
 }
 
-.secondary-button {
-  display: inline-flex;
-  min-height: 46px;
+.report-toolbar__actions {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 8px;
-  padding: 11px 14px;
-  background: var(--color-surface);
-  color: var(--color-primary);
-  font-weight: 850;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
-.screen-heading {
+.back-link {
+  min-height: auto;
+  border-color: transparent;
+  padding-inline: 4px;
+}
+
+.pdf-viewer {
+  display: grid;
+  justify-items: center;
+  gap: 24px;
+  min-height: 65vh;
   border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 14px;
-  background: var(--color-surface);
-  box-shadow: 0 10px 24px var(--color-shadow);
+  border-radius: 10px;
+  padding: 24px;
+  background: #dfe5e0;
+  box-shadow: inset 0 1px 8px rgba(16, 49, 31, 0.08);
 }
 
-.print-report {
+.pdf-page {
+  position: relative;
   display: grid;
-  gap: 18px;
+  max-width: 100%;
+  justify-items: center;
 }
 
-.document-page {
-  box-sizing: border-box;
-  width: min(100%, 8.5in);
-  min-height: 11in;
-  margin: 0 auto;
-  padding: 0.5in;
+.pdf-page canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
   background: #fff;
-  color: #111827;
-  font-family: Arial, sans-serif;
-  box-shadow: 0 14px 34px rgba(34, 57, 43, 0.12);
-  page-break-after: always;
+  box-shadow: 0 12px 34px rgba(20, 54, 34, 0.2);
 }
 
-.document-header {
+.pdf-page__number {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(17, 50, 31, 0.78);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.pdf-page:hover .pdf-page__number,
+.pdf-page:focus-within .pdf-page__number {
+  opacity: 1;
+}
+
+.render-progress {
+  position: sticky;
+  z-index: 4;
+  top: 88px;
+  border-radius: 999px;
+  padding: 8px 13px;
+  background: rgba(17, 50, 31, 0.9);
+  color: #fff;
+  font-size: 0.76rem;
+  font-weight: 800;
+  box-shadow: 0 8px 20px rgba(17, 50, 31, 0.18);
+}
+
+.viewer-state {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.document-title {
-  margin: 34px 0 24px;
+  width: min(100%, 620px);
+  min-height: 280px;
+  align-content: center;
+  justify-items: center;
+  gap: 14px;
+  padding: 36px;
+  color: var(--color-text-muted);
   text-align: center;
 }
 
-.document-title h1 {
-  margin: 0;
-  font-size: 22px;
-}
-
-.document-title p {
-  margin: 6px 0 0;
-  font-size: 16px;
-}
-
-.report-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-
-.report-table td,
-.report-table th {
-  border-bottom: 1px solid #d1d5db;
-  padding: 9px 8px;
-  vertical-align: top;
-  font-size: 11px;
-}
-
-.report-table th {
-  color: #4b5563;
-  text-align: left;
-  font-weight: 700;
-}
-
-.section-title {
-  margin: 0 0 14px;
-  font-size: 17px;
-}
-
-.section-title--spaced {
-  margin-top: 28px;
-}
-
-.section-subtitle,
-.empty-document-block {
-  color: #4b5563;
-  font-size: 12px;
-}
-
-.description-list {
-  display: grid;
-  gap: 12px;
-  font-size: 12px;
-}
-
-.description-list strong {
-  display: block;
-  margin-bottom: 4px;
-  color: #4b5563;
-}
-
-.conclusion {
-  font-size: 13px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-}
-
-.sample-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
-}
-
-.photo-page {
-  display: grid;
-  align-content: start;
-  gap: 14px;
-}
-
-.photo-page figure {
+.viewer-state p {
   margin: 0;
 }
 
-.photo-page img {
-  width: 100%;
-  max-height: 8.4in;
-  border: 1px solid #d1d5db;
-  object-fit: contain;
+.viewer-state--error strong,
+.viewer-state--error p {
+  color: var(--color-danger);
 }
 
-.photo-page figcaption {
-  margin-top: 7px;
-  color: #4b5563;
-  font-size: 11px;
+.viewer-spinner {
+  width: 34px;
+  height: 34px;
+  border: 4px solid #d7e6d8;
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
-.final-note {
-  margin-top: 22px;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.signature-table {
-  margin-top: 42px;
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media print {
-  .non-printable {
+  .report-toolbar,
+  .render-progress,
+  .pdf-page__number {
     display: none !important;
   }
 
-  .screen-page {
+  .screen-page,
+  .pdf-viewer {
     min-height: 0;
+    border: 0;
     padding: 0;
+    background: #fff;
+    box-shadow: none;
   }
 
-  .print-report {
-    gap: 0;
+  .pdf-page {
+    page-break-after: always;
   }
 
-  .document-page {
-    width: auto;
-    min-height: 0;
-    margin: 0;
+  .pdf-page canvas {
+    width: 100% !important;
+    height: auto !important;
     box-shadow: none;
   }
 }
 
-@media (max-width: 760px) {
-  .detail-toolbar,
-  .screen-heading,
-  .document-header,
-  .sample-grid {
-    grid-template-columns: 1fr;
+@media (max-width: 620px) {
+  .report-toolbar {
+    top: 6px;
   }
 
-  .detail-toolbar {
+  .report-toolbar .primary-button {
+    min-height: 42px;
+    padding-inline: 12px;
+  }
+
+  .report-toolbar {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .detail-toolbar__actions {
+  .report-toolbar__actions {
     display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .detail-toolbar__actions .primary-button,
-  .detail-toolbar__actions .secondary-button {
-    width: 100%;
+  .report-toolbar__actions > :only-child {
+    grid-column: 1 / -1;
+  }
+
+  .pdf-viewer {
+    gap: 12px;
+    border-radius: 8px;
+    padding: 8px;
+  }
+
+  .render-progress {
+    top: 78px;
+  }
+
+  .viewer-state {
+    padding: 22px;
   }
 }
 </style>

@@ -8,6 +8,7 @@ import {
   serializeDocument,
   serializePhoto,
   type SerializedGeneratedDocument,
+  type SerializedProductPhoto,
   type ServerReportDetails,
 } from '@/shared/api/server-api'
 import { getProductLabel } from '@/shared/constants/products'
@@ -19,7 +20,9 @@ import {
 } from '@/shared/repositories/document-template-repository'
 import { createEntityId, createSyncMetadata } from '@/shared/sync/sync-metadata'
 import type {
+  DocumentTemplate,
   GeneratedDocument,
+  DocumentTemplateFieldValue,
   ProductPhoto,
   ReportDescriptions,
   ReportDraft,
@@ -50,7 +53,7 @@ export interface CreateReportDraftInput {
   inspectionResults: ReportInspectionResults
   descriptions: ReportDescriptions
   expertConclusion: string
-  customFieldValues?: Record<string, string>
+  customFieldValues?: Record<string, DocumentTemplateFieldValue>
   sampling: ReportSampling
   signatures: ReportSignatures
   photos: CreateReportPhotoInput[]
@@ -68,20 +71,16 @@ export interface ReportDraftDetails {
   documents: GeneratedDocument[]
 }
 
-const DEFAULT_REPORT_PRODUCT_ID = 'sweet-red-pepper'
-
 export async function createReportDraftFromTemplate(
   templateId: string,
   workerAccountId: string,
   inspectorName: string,
 ): Promise<ReportDraftDetails> {
-  const productName = getProductLabel(DEFAULT_REPORT_PRODUCT_ID)
-
   return createReportDraft(
     {
       templateId,
       workerAccountId,
-      productId: DEFAULT_REPORT_PRODUCT_ID,
+      productId: '',
       inspectorName,
       mainInfo: {
         orderNumber: '',
@@ -89,8 +88,8 @@ export async function createReportDraftFromTemplate(
         shipper: '',
         trailerNumber: '',
         placeOfSurvey: '',
-        productName,
-        packageName: '1 кг',
+        productName: '',
+        packageName: '',
         plu: '',
         openingDate: '',
         surveyDate: '',
@@ -168,7 +167,11 @@ export async function createReportDraft(
   const existingPhotosById = new Map(
     (existingDetails?.photos ?? []).map((photo) => [photo.id, photo]),
   )
-  const productName = input.mainInfo.productName.trim() || getProductLabel(input.productId)
+  const reportTemplate = selectedTemplate ?? existingDraft?.templateSnapshot
+  const hasProductField = templateHasProductField(reportTemplate)
+  const productId = hasProductField ? input.productId : ''
+  const selectedProductName = input.mainInfo.productName.trim() || getProductLabel(productId)
+  const productName = productId && selectedProductName ? selectedProductName : reportTemplate?.name ?? ''
   const photos = await Promise.all(
     input.photos.map<Promise<ProductPhoto>>(async (photoInput) => {
       const existingPhoto = existingPhotosById.get(photoInput.id ?? '')
@@ -208,7 +211,7 @@ export async function createReportDraft(
         }
       : existingDraft?.templateSnapshot,
     workerAccountId: input.workerAccountId,
-    productId: input.productId,
+    productId,
     productName,
     inspectorName: input.inspectorName.trim(),
     mainInfo: {
@@ -248,6 +251,10 @@ export async function listReportDrafts(adminAccountId?: string): Promise<ReportD
   return reports.filter(hasVisibleReportContent)
 }
 
+export async function listArchivedReportDrafts(adminAccountId: string): Promise<ReportDraft[]> {
+  return apiGet<ReportDraft[]>('/api/reports/archive', adminAccountId)
+}
+
 export async function listWorkerReportDrafts(workerAccountId: string): Promise<ReportDraft[]> {
   const reports = await apiGet<ReportDraft[]>('/api/reports/mine', workerAccountId)
   return reports.filter(hasVisibleReportContent)
@@ -271,6 +278,18 @@ export async function getReportDraftDetails(
 
     throw error
   }
+}
+
+export async function listReportPhotoPreviews(
+  draftId: string,
+  accountId: string,
+): Promise<ProductPhoto[]> {
+  const photos = await apiGet<SerializedProductPhoto[]>(
+    `/api/reports/${encodeURIComponent(draftId)}/photo-previews`,
+    accountId,
+  )
+
+  return photos.map(deserializePhoto)
 }
 
 export async function saveGeneratedDocument(
@@ -300,11 +319,48 @@ export async function saveGeneratedDocument(
   return deserializeDocument(savedDocument)
 }
 
-export async function softDeleteReportDraft(
+export async function generateReportDocumentOnServer(
   draftId: string,
   accountId: string,
-): Promise<void> {
+): Promise<GeneratedDocument> {
+  const savedDocument = await apiPost<SerializedGeneratedDocument>(
+    `/api/reports/${encodeURIComponent(draftId)}/documents/generate`,
+    undefined,
+    accountId,
+  )
+
+  return deserializeDocument(savedDocument)
+}
+
+export async function submitReportDraft(
+  draftId: string,
+  accountId: string,
+): Promise<ReportDraftDetails> {
+  const details = await apiPost<ServerReportDetails>(
+    `/api/reports/${encodeURIComponent(draftId)}/submit`,
+    undefined,
+    accountId,
+  )
+
+  return deserializeDetails(details)
+}
+
+export async function softDeleteReportDraft(draftId: string, accountId: string): Promise<void> {
   await apiDelete(`/api/reports/${encodeURIComponent(draftId)}`, accountId)
+}
+
+export async function permanentlyDeleteArchivedReport(
+  reportId: string,
+  adminAccountId: string,
+): Promise<void> {
+  await apiDelete(`/api/reports/archive/${encodeURIComponent(reportId)}`, adminAccountId)
+}
+
+export async function restoreArchivedReport(
+  reportId: string,
+  adminAccountId: string,
+): Promise<void> {
+  await apiPost(`/api/reports/archive/${encodeURIComponent(reportId)}`, undefined, adminAccountId)
 }
 
 async function createBlobHash(blob: Blob): Promise<string> {
@@ -330,6 +386,18 @@ function hasVisibleReportContent(draft: ReportDraft): boolean {
   )
 }
 
+function templateHasProductField(
+  template: ReportDraft['templateSnapshot'] | DocumentTemplate | undefined,
+): boolean {
+  const sections = template?.inputSchema?.steps ?? template?.sections ?? []
+
+  return sections.some((section) =>
+    section.fields.some(
+      (field) => field.dataPath === 'productId' || field.dataPath === 'mainInfo.productName',
+    ),
+  )
+}
+
 function isNotFound(error: unknown): boolean {
   return error instanceof Error && /не найден|404/i.test(error.message)
 }
@@ -347,6 +415,10 @@ export class ReportRepository {
     return listReportDrafts(adminAccountId)
   }
 
+  listArchived(adminAccountId: string) {
+    return listArchivedReportDrafts(adminAccountId)
+  }
+
   listForWorker(workerAccountId: string) {
     return listWorkerReportDrafts(workerAccountId)
   }
@@ -357,6 +429,10 @@ export class ReportRepository {
 
   softDelete(reportId: string, accountId: string) {
     return softDeleteReportDraft(reportId, accountId)
+  }
+
+  permanentlyDeleteArchived(reportId: string, adminAccountId: string) {
+    return permanentlyDeleteArchivedReport(reportId, adminAccountId)
   }
 }
 

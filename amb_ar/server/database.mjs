@@ -66,6 +66,12 @@ export function createServerDatabase(databasePath) {
       description TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('draft', 'active', 'archived')),
       sections_json TEXT NOT NULL CHECK (json_valid(sections_json)),
+      input_schema_json TEXT CHECK (
+        input_schema_json IS NULL OR json_valid(input_schema_json)
+      ),
+      render_spec_json TEXT CHECK (
+        render_spec_json IS NULL OR json_valid(render_spec_json)
+      ),
       created_by_account_id TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -84,6 +90,9 @@ export function createServerDatabase(databasePath) {
     CREATE TABLE IF NOT EXISTS report_drafts (
       id TEXT PRIMARY KEY,
       status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'exported', 'archived')),
+      archived_from_status TEXT CHECK (
+        archived_from_status IS NULL OR archived_from_status IN ('draft', 'ready', 'exported')
+      ),
       template_id TEXT,
       template_snapshot_json TEXT CHECK (
         template_snapshot_json IS NULL OR json_valid(template_snapshot_json)
@@ -169,17 +178,37 @@ export function createServerDatabase(databasePath) {
   `)
 
   migrateProductPhotoTemplateField(database)
+  migrateDocumentTemplateSchemas(database)
+  migrateReportArchiveStatus(database)
 
   const statements = prepareStatements(database)
 
   migrateLegacyEntities(database, statements)
-  database.exec('PRAGMA user_version = 3')
+  database.exec('PRAGMA user_version = 5')
 
   return {
     path: databasePath,
     readDb: (binaryDraftId) => readDb(statements, binaryDraftId),
     writeDb: (data) => writeDb(database, statements, data),
+    writeDbReplacingGeneratedDocuments: (data, reportId) =>
+      writeDb(database, statements, data, { replaceGeneratedDocumentsForReportId: reportId }),
+    purgeExpiredArchivedReports: (nowTimestamp) =>
+      purgeExpiredArchivedReports(database, nowTimestamp),
+    permanentlyDeleteArchivedReport: (reportId) =>
+      permanentlyDeleteArchivedReport(database, reportId),
     close: () => database.close(),
+  }
+}
+
+function migrateDocumentTemplateSchemas(database) {
+  const columns = database.prepare('PRAGMA table_info(document_templates)').all()
+
+  if (!columns.some((column) => column.name === 'input_schema_json')) {
+    database.exec('ALTER TABLE document_templates ADD COLUMN input_schema_json TEXT')
+  }
+
+  if (!columns.some((column) => column.name === 'render_spec_json')) {
+    database.exec('ALTER TABLE document_templates ADD COLUMN render_spec_json TEXT')
   }
 }
 
@@ -195,6 +224,14 @@ function migrateProductPhotoTemplateField(database) {
       ON product_photos (draft_id, template_field_id, sort_order)
       WHERE deleted_at IS NULL
   `)
+}
+
+function migrateReportArchiveStatus(database) {
+  const columns = database.prepare('PRAGMA table_info(report_drafts)').all()
+
+  if (!columns.some((column) => column.name === 'archived_from_status')) {
+    database.exec('ALTER TABLE report_drafts ADD COLUMN archived_from_status TEXT')
+  }
 }
 
 function prepareStatements(database) {
@@ -250,15 +287,18 @@ function prepareStatements(database) {
       select: database.prepare('SELECT * FROM document_templates'),
       upsert: database.prepare(`
         INSERT INTO document_templates (
-          id, name, description, status, sections_json, created_by_account_id, created_at,
+          id, name, description, status, sections_json, input_schema_json, render_spec_json,
+          created_by_account_id, created_at,
           updated_at, published_at, deleted_at, last_modified, local_version, server_timestamp,
           server_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
           name = excluded.name,
           description = excluded.description,
           status = excluded.status,
           sections_json = excluded.sections_json,
+          input_schema_json = excluded.input_schema_json,
+          render_spec_json = excluded.render_spec_json,
           created_by_account_id = excluded.created_by_account_id,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
@@ -276,14 +316,15 @@ function prepareStatements(database) {
       select: database.prepare('SELECT * FROM report_drafts'),
       upsert: database.prepare(`
         INSERT INTO report_drafts (
-          id, status, template_id, template_snapshot_json, worker_account_id, product_id,
+          id, status, archived_from_status, template_id, template_snapshot_json, worker_account_id, product_id,
           product_name, inspector_name, main_info_json, temperature_info_json,
           inspection_results_json, descriptions_json, expert_conclusion,
           custom_field_values_json, sampling_json, signatures_json, photo_ids_json, created_at,
           updated_at, deleted_at, last_modified, local_version, server_timestamp, server_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
           status = excluded.status,
+          archived_from_status = excluded.archived_from_status,
           template_id = excluded.template_id,
           template_snapshot_json = excluded.template_snapshot_json,
           worker_account_id = excluded.worker_account_id,
@@ -418,12 +459,18 @@ function readDb(statements, binaryDraftId) {
   }
 }
 
-function writeDb(database, statements, input) {
+function writeDb(database, statements, input, options = {}) {
   const data = normalizeDb(input)
 
   database.exec('BEGIN IMMEDIATE')
 
   try {
+    if (options.replaceGeneratedDocumentsForReportId) {
+      database
+        .prepare('DELETE FROM generated_documents WHERE draft_id = ?')
+        .run(options.replaceGeneratedDocumentsForReportId)
+    }
+
     for (const account of data.accounts) {
       statements.accounts.upsert.run(...accountToParameters(account))
     }
@@ -455,6 +502,99 @@ function writeDb(database, statements, input) {
   }
 }
 
+function purgeExpiredArchivedReports(database, nowTimestamp) {
+  const expiredReportIds = database
+    .prepare(
+      `
+      SELECT id, deleted_at
+      FROM report_drafts
+      WHERE status = 'archived' AND deleted_at IS NOT NULL
+    `,
+    )
+    .all()
+    .filter((report) => addCalendarMonth(report.deleted_at) <= nowTimestamp)
+    .map((report) => report.id)
+
+  if (!expiredReportIds.length) {
+    return 0
+  }
+
+  database.exec('BEGIN IMMEDIATE')
+
+  try {
+    const deleteDocuments = database.prepare(
+      'DELETE FROM generated_documents WHERE draft_id = ?',
+    )
+    const deletePhotos = database.prepare('DELETE FROM product_photos WHERE draft_id = ?')
+    const deleteReport = database.prepare(
+      "DELETE FROM report_drafts WHERE id = ? AND status = 'archived'",
+    )
+    let deletedReportCount = 0
+
+    for (const reportId of expiredReportIds) {
+      deleteDocuments.run(reportId)
+      deletePhotos.run(reportId)
+      deletedReportCount += Number(deleteReport.run(reportId).changes)
+    }
+
+    database.exec('COMMIT')
+    return deletedReportCount
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+function addCalendarMonth(timestamp) {
+  const date = new Date(timestamp)
+  const originalDay = date.getUTCDate()
+
+  date.setUTCDate(1)
+  date.setUTCMonth(date.getUTCMonth() + 1)
+  const lastDayOfTargetMonth = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0),
+  ).getUTCDate()
+  date.setUTCDate(Math.min(originalDay, lastDayOfTargetMonth))
+
+  return date.getTime()
+}
+
+function permanentlyDeleteArchivedReport(database, reportId) {
+  database.exec('BEGIN IMMEDIATE')
+
+  try {
+    database
+      .prepare(
+        `
+        DELETE FROM generated_documents
+        WHERE draft_id = ? AND EXISTS (
+          SELECT 1 FROM report_drafts WHERE id = ? AND status = 'archived'
+        )
+      `,
+      )
+      .run(reportId, reportId)
+    database
+      .prepare(
+        `
+        DELETE FROM product_photos
+        WHERE draft_id = ? AND EXISTS (
+          SELECT 1 FROM report_drafts WHERE id = ? AND status = 'archived'
+        )
+      `,
+      )
+      .run(reportId, reportId)
+    const result = database
+      .prepare("DELETE FROM report_drafts WHERE id = ? AND status = 'archived'")
+      .run(reportId)
+
+    database.exec('COMMIT')
+    return Number(result.changes)
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
 function migrateLegacyEntities(database, statements) {
   const legacyTable = database
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'entities'")
@@ -465,9 +605,7 @@ function migrateLegacyEntities(database, statements) {
   }
 
   const migrated = normalizeDb({})
-  const rows = database
-    .prepare('SELECT collection, data_json, binary_data FROM entities')
-    .all()
+  const rows = database.prepare('SELECT collection, data_json, binary_data FROM entities').all()
 
   for (const row of rows) {
     if (!COLLECTIONS.includes(row.collection)) {
@@ -517,12 +655,16 @@ function reportTemplateOptionToParameters(entity) {
 }
 
 function documentTemplateToParameters(entity) {
+  const sections = entity.inputSchema?.steps ?? entity.sections ?? []
+
   return [
     entity.id,
     entity.name,
     entity.description,
     entity.status,
-    JSON.stringify(entity.sections ?? []),
+    JSON.stringify(sections),
+    JSON.stringify(entity.inputSchema ?? { version: 1, steps: sections }),
+    JSON.stringify(entity.renderSpec ?? createLegacyRenderSpec(entity.name, sections)),
     entity.createdByAccountId,
     entity.createdAt,
     entity.updatedAt,
@@ -536,6 +678,7 @@ function reportDraftToParameters(entity) {
   return [
     entity.id,
     entity.status,
+    nullable(entity.archivedFromStatus),
     nullable(entity.templateId),
     jsonOrNull(entity.templateSnapshot),
     entity.workerAccountId,
@@ -622,12 +765,27 @@ function reportTemplateOptionFromRow(row) {
 }
 
 function documentTemplateFromRow(row) {
+  const legacySections = JSON.parse(row.sections_json)
+  const inputSchema = row.input_schema_json
+    ? JSON.parse(row.input_schema_json)
+    : { version: 1, steps: legacySections }
+  const storedRenderSpec = row.render_spec_json
+    ? JSON.parse(row.render_spec_json)
+    : createLegacyRenderSpec(row.name, inputSchema.steps)
+  const renderSpec = {
+    ...storedRenderSpec,
+    mode: 'flow',
+    layout: 'branded',
+  }
+
   return withMetadata(row, {
     id: row.id,
     name: row.name,
     description: row.description,
     status: row.status,
-    sections: JSON.parse(row.sections_json),
+    inputSchema,
+    renderSpec,
+    sections: inputSchema.steps,
     createdByAccountId: row.created_by_account_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -635,10 +793,45 @@ function documentTemplateFromRow(row) {
   })
 }
 
+function createLegacyRenderSpec(documentTitle, sections) {
+  return {
+    version: 1,
+    mode: 'flow',
+    layout: 'branded',
+    pageSize: 'A4',
+    documentTitle: String(documentTitle ?? ''),
+    sections: (sections ?? []).map((section) => ({
+      id: `render-${section.id}`,
+      inputSectionId: section.id,
+      title: section.title,
+      pageBreakBefore: false,
+      columns: 1,
+      showDescription: true,
+      hidden: false,
+      fields: (section.fields ?? []).map((field) => ({
+        dataPath: field.dataPath,
+        label: field.label,
+        width: field.width ?? 'full',
+        display:
+          field.type === 'table'
+            ? 'table'
+            : field.type === 'checkbox' || field.type === 'passFail'
+              ? 'checkmark'
+              : 'value',
+        hideWhenEmpty: false,
+        hidden: false,
+      })),
+    })),
+  }
+}
+
 function reportDraftFromRow(row) {
   return withMetadata(row, {
     id: row.id,
     status: row.status,
+    ...(row.archived_from_status === null
+      ? {}
+      : { archivedFromStatus: row.archived_from_status }),
     ...(row.template_id === null ? {} : { templateId: row.template_id }),
     ...(row.template_snapshot_json === null
       ? {}

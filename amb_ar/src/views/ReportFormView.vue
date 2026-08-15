@@ -4,13 +4,16 @@ import { onBeforeRouteLeave, useRouter } from 'vue-router'
 
 import FormSection from '@/components/reports/FormSection.vue'
 import PhotoPicker from '@/components/reports/PhotoPicker.vue'
+import { getTemplateInputSections } from '@/shared/templates/document-template-schema'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDocumentTemplateStore } from '@/stores/document-template.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
 import { useReportTemplateStore } from '@/stores/report-template.store'
 import type {
   DocumentTemplateField,
+  DocumentTemplateFieldValue,
   DocumentTemplateSection,
+  DocumentTemplateTableValue,
   ReportDraft,
   ReportInspectionResults,
   ReportMainInfo,
@@ -61,7 +64,7 @@ const documentTemplateStore = useDocumentTemplateStore()
 const reportDraftStore = useReportDraftStore()
 const reportTemplateStore = useReportTemplateStore()
 
-const initialProductId = 'sweet-red-pepper'
+const initialProductId = ''
 const initialExpertConclusion = ''
 const AUTOSAVE_DELAY_MS = 600
 
@@ -71,8 +74,8 @@ const initialMainInfo = {
   shipper: '',
   trailerNumber: '',
   placeOfSurvey: '',
-  productName: 'Перец красный сладкий 1 кг',
-  packageName: '1 кг',
+  productName: '',
+  packageName: '',
   plu: '',
   openingDate: '',
   surveyDate: '',
@@ -130,6 +133,7 @@ const draftId = ref<string | null>(null)
 const autosaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 const lastSavedAt = ref<number | null>(null)
 const isAutosaveReady = ref(false)
+const testAutofillNotice = ref('')
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null
 let activeSavePromise: Promise<ReportDraft | null> | null = null
 
@@ -140,7 +144,7 @@ const temperatureInfo = reactive({ ...initialTemperatureInfo })
 const inspectionResults = reactive({ ...initialInspectionResults })
 
 const descriptions = reactive({ ...initialDescriptions })
-const customFieldValues = reactive<Record<string, string>>({})
+const customFieldValues = reactive<Record<string, DocumentTemplateFieldValue>>({})
 
 const sampling = reactive({
   ...initialSampling,
@@ -148,6 +152,28 @@ const sampling = reactive({
 })
 
 const signatures = reactive({ ...initialSignatures })
+
+const autosaveMessage = computed(() => {
+  if (autosaveState.value === 'idle') {
+    return 'Есть несохраненные изменения'
+  }
+
+  if (autosaveState.value === 'saving') {
+    return 'Сохраняем на сервере...'
+  }
+
+  if (autosaveState.value === 'error') {
+    return 'Не удалось сохранить изменения'
+  }
+
+  return lastSavedAt.value
+    ? `Сохранено в ${new Intl.DateTimeFormat('ru-RU', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }).format(lastSavedAt.value)}`
+    : 'Сохранено'
+})
 
 const legacySteps: ReportStep[] = [
   {
@@ -233,12 +259,10 @@ const photoCategories: Array<{ id: ReportPhotoCategory; title: string; subtitle:
 
 const templateSections = computed<DocumentTemplateSection[]>(() =>
   [
-    ...(reportDraftStore.selectedReport?.templateSnapshot?.sections ??
-      selectedDocumentTemplate.value?.sections ??
-      []),
-  ].sort(
-    (firstSection, secondSection) => firstSection.sortOrder - secondSection.sortOrder,
-  ),
+    ...getTemplateInputSections(
+      reportDraftStore.selectedReport?.templateSnapshot ?? selectedDocumentTemplate.value,
+    ),
+  ].sort((firstSection, secondSection) => firstSection.sortOrder - secondSection.sortOrder),
 )
 const steps = computed<ReportStep[]>(() =>
   templateSections.value.length
@@ -257,6 +281,13 @@ const templatePhotoFieldIds = computed(() =>
     section.fields
       .filter((field) => field.type === 'photo' || field.dataPath === 'photos')
       .map((field) => field.id),
+  ),
+)
+const hasTemplateProductField = computed(() =>
+  templateSections.value.some((section) =>
+    section.fields.some(
+      (field) => field.dataPath === 'productId' || field.dataPath === 'mainInfo.productName',
+    ),
   ),
 )
 const activeStep = computed(
@@ -302,7 +333,9 @@ const canSave = computed(
     Boolean(selectedTemplateId.value) &&
     Boolean(workerFullName.value.trim()) &&
     templateSections.value.every((section) =>
-      section.fields.every((field) => !field.required || hasDynamicFieldValue(field)),
+      section.fields.every(
+        (field) => !field.required || isProductTemplateField(field) || hasDynamicFieldValue(field),
+      ),
     ),
 )
 watch(selectedTemplateId, () => {
@@ -313,6 +346,10 @@ watch(selectedTemplateId, () => {
   }
 })
 watch(productId, (selectedProductId) => {
+  if (!hasTemplateProductField.value) {
+    return
+  }
+
   const product = productOptions.value.find((option) => option.id === selectedProductId)
 
   if (product) {
@@ -321,7 +358,7 @@ watch(productId, (selectedProductId) => {
 })
 
 watch(productOptions, (options) => {
-  if (!options.length) {
+  if (!options.length || !hasTemplateProductField.value) {
     return
   }
 
@@ -444,7 +481,7 @@ function getDynamicFieldValue(dataPath: string): string {
   }
 
   if (dataPath.startsWith('custom.')) {
-    return customFieldValues[dataPath] ?? ''
+    return formatScalarValue(customFieldValues[dataPath])
   }
 
   const [rootKey, fieldKey] = dataPath.split('.')
@@ -461,14 +498,14 @@ function getDynamicFieldValue(dataPath: string): string {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
 }
 
-function setDynamicFieldValue(dataPath: string, value: string): void {
+function setDynamicFieldValue(dataPath: string, value: string | boolean): void {
   if (dataPath === 'mainInfo.productName') {
-    productId.value = value
+    productId.value = String(value)
     return
   }
 
   if (dataPath === 'expertConclusion') {
-    expertConclusion.value = value
+    expertConclusion.value = String(value)
     return
   }
 
@@ -488,8 +525,79 @@ function setDynamicFieldValue(dataPath: string, value: string): void {
   const root = rootKey ? roots[rootKey] : undefined
 
   if (root && fieldKey) {
-    root[fieldKey] = value
+    root[fieldKey] = String(value)
   }
+}
+
+function getDynamicBooleanValue(dataPath: string): boolean {
+  return customFieldValues[dataPath] === true || getDynamicFieldValue(dataPath) === 'true'
+}
+
+function getDynamicTableValue(dataPath: string): DocumentTemplateTableValue {
+  const value = customFieldValues[dataPath]
+
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as DocumentTemplateTableValue)
+    : {}
+}
+
+function getTableCellValue(
+  dataPath: string,
+  rowId: string,
+  columnId: string,
+): string | number | boolean {
+  return getDynamicTableValue(dataPath)[rowId]?.[columnId] ?? ''
+}
+
+function setTableCellValue(
+  dataPath: string,
+  rowId: string,
+  columnId: string,
+  value: string | boolean,
+): void {
+  const currentTable = getDynamicTableValue(dataPath)
+
+  customFieldValues[dataPath] = {
+    ...currentTable,
+    [rowId]: {
+      ...currentTable[rowId],
+      [columnId]: value,
+    },
+  }
+}
+
+function getCalculatedFieldValue(field: DocumentTemplateField): string {
+  const calculation = field.calculation
+
+  if (!calculation?.sourcePaths.length) {
+    return getDynamicFieldValue(field.dataPath)
+  }
+
+  const values = calculation.sourcePaths
+    .map((path) => Number.parseFloat(getDynamicFieldValue(path).replace(',', '.')))
+    .filter(Number.isFinite)
+
+  if (!values.length) {
+    return ''
+  }
+
+  let result = values[0] ?? 0
+
+  if (calculation.operator === 'sum') {
+    result = values.reduce((sum, value) => sum + value, 0)
+  } else if (calculation.operator === 'difference') {
+    result = values.slice(1).reduce((difference, value) => difference - value, result)
+  } else if (calculation.operator === 'average') {
+    result = values.reduce((sum, value) => sum + value, 0) / values.length
+  }
+
+  return result.toFixed(calculation.precision ?? 2).replace(/\.00$/, '')
+}
+
+function formatScalarValue(value: DocumentTemplateFieldValue | undefined): string {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value)
+    : ''
 }
 
 function getDynamicSelectOptions(field: DocumentTemplateField): DynamicSelectOption[] {
@@ -503,6 +611,13 @@ function getDynamicSelectOptions(field: DocumentTemplateField): DynamicSelectOpt
       label: option.label,
       value: option.label,
     }))
+  }
+
+  if (field.type === 'passFail') {
+    return [
+      { id: `${field.id}-pass`, label: 'Соответствует', value: 'pass' },
+      { id: `${field.id}-fail`, label: 'Не соответствует', value: 'fail' },
+    ]
   }
 
   const { dataPath } = field
@@ -538,8 +653,12 @@ function getDynamicSelectOptions(field: DocumentTemplateField): DynamicSelectOpt
 }
 
 function getDynamicInputType(field: DocumentTemplateField): string {
-  if (field.type === 'number' || field.type === 'date') {
+  if (field.type === 'number' || field.type === 'date' || field.type === 'time') {
     return field.type
+  }
+
+  if (field.type === 'measurement') {
+    return 'number'
   }
 
   return 'text'
@@ -547,6 +666,10 @@ function getDynamicInputType(field: DocumentTemplateField): string {
 
 function getEventValue(event: Event): string {
   return (event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).value
+}
+
+function getEventChecked(event: Event): boolean {
+  return (event.target as HTMLInputElement).checked
 }
 
 function hasDynamicFieldValue(field: DocumentTemplateField): boolean {
@@ -562,14 +685,45 @@ function hasDynamicFieldValue(field: DocumentTemplateField): boolean {
     return sampling.points.length > 0
   }
 
-  return Boolean(getDynamicFieldValue(field.dataPath).trim())
+  if (field.type === 'table') {
+    return Object.values(getDynamicTableValue(field.dataPath)).some((row) =>
+      Object.values(row).some((value) => value !== '' && value !== false),
+    )
+  }
+
+  if (field.type === 'checkbox') {
+    return getDynamicBooleanValue(field.dataPath)
+  }
+
+  return Boolean(
+    (field.type === 'calculated'
+      ? getCalculatedFieldValue(field)
+      : getDynamicFieldValue(field.dataPath)
+    ).trim(),
+  )
+}
+
+function isAutomaticallyFilledField(field: DocumentTemplateField): boolean {
+  return field.type === 'signature' || field.type === 'calculated'
+}
+
+function isProductTemplateField(field: DocumentTemplateField): boolean {
+  return field.dataPath === 'productId' || field.dataPath === 'mainInfo.productName'
+}
+
+function isTemplateSectionComplete(section: DocumentTemplateSection): boolean {
+  const userFields = section.fields.filter((field) => !isAutomaticallyFilledField(field))
+  const requiredUserFields = userFields.filter((field) => field.required)
+  const fieldsToCheck = requiredUserFields.length ? requiredUserFields : userFields
+
+  return fieldsToCheck.length > 0 && fieldsToCheck.every((field) => hasDynamicFieldValue(field))
 }
 
 function isStepFilled(stepId: ReportStepId): boolean {
   if (templateSections.value.length) {
     const section = templateSections.value.find((item) => item.id === stepId)
 
-    return section?.fields.some((field) => hasDynamicFieldValue(field)) ?? false
+    return section ? isTemplateSectionComplete(section) : false
   }
 
   switch (stepId) {
@@ -675,11 +829,7 @@ function handleTemplatePhotoSelected(fieldId: string, file: File): void {
   appendPhoto(file, 'goods', fieldId)
 }
 
-function appendPhoto(
-  file: File,
-  category: ReportPhotoCategory,
-  templateFieldId?: string,
-): void {
+function appendPhoto(file: File, category: ReportPhotoCategory, templateFieldId?: string): void {
   const nextOrder = photos.value.length + 1
 
   photos.value = [
@@ -730,6 +880,172 @@ function generateSampling(): void {
   sampling.points = points
 }
 
+function fillWithTestData(): void {
+  const today = formatDateForInput(new Date())
+  const compactDate = today.replaceAll('-', '')
+
+  Object.assign(mainInfo, {
+    orderNumber: `TEST-${compactDate}-001`,
+    zost: 'ZOST-TEST-01',
+    shipper: 'ООО «Тестовый поставщик»',
+    trailerNumber: 'А123ВС77',
+    placeOfSurvey: 'Тестовый склад',
+    packageName: packageOptions.value[0]?.value ?? 'Короб 10 кг',
+    plu: 'TEST-PLU',
+    openingDate: today,
+    surveyDate: today,
+    packingKind: packingKindOptions.value[0]?.value ?? 'Картонный короб',
+    boxMarking: 'TEST / LOT-001',
+  })
+
+  const firstProduct = productOptions.value[0]
+  if (firstProduct) {
+    productId.value = firstProduct.id
+  }
+
+  Object.assign(temperatureInfo, {
+    storageTemperature: '6',
+    pulpTemperature: '5.8',
+    temperatureViolation: temperatureViolationOptions.value[0]?.value ?? 'Нет',
+    sealNumber: 'TEST-SEAL-001',
+    thermographPresence: thermographPresenceOptions.value[0]?.value ?? 'Да',
+    thermographViolation: thermographViolationOptions.value[0]?.value ?? 'Нет',
+  })
+
+  Object.assign(inspectionResults, {
+    firstCategoryPercent: '96',
+    firstCategoryNonStandardPercent: '2',
+    secondCategoryNonStandardPercent: '1',
+    wastePercent: '1',
+    density: 'Плотный',
+    brix: '7.5',
+    caliber: '70–110 мм',
+    caliberPassportMatch: caliberPassportMatchOptions.value[0]?.value ?? 'Да',
+    caliberMismatch: '2',
+    variety: 'Тестовый сорт',
+    varietyPassportMatch: varietyPassportMatchOptions.value[0]?.value ?? 'Да',
+  })
+
+  Object.assign(descriptions, {
+    secondClassDefects: 'Незначительные тестовые дефекты поверхности.',
+    waste: 'Тестовое описание отходов.',
+    caliberMismatch: 'Незначительное тестовое отклонение калибра.',
+  })
+
+  expertConclusion.value = 'Тестовая партия соответствует требованиям качества.'
+  Object.assign(signatures, {
+    reportIssuedDate: today,
+    expertName: workerFullName.value || 'Тестовый инспектор',
+    retailRepresentativeName: 'Тестовый представитель торговой сети',
+  })
+  Object.assign(sampling, {
+    palletCount: 12,
+    sampleCount: 6,
+    seed: `test-${compactDate}`,
+  })
+  generateSampling()
+
+  templateSections.value
+    .flatMap((section) => section.fields)
+    .forEach((field, fieldIndex) => fillDynamicFieldWithTestData(field, fieldIndex, today))
+
+  testAutofillNotice.value =
+    'Тестовые данные добавлены. Фото не создаются; черновик сохраняется на сервере автоматически.'
+}
+
+function fillDynamicFieldWithTestData(
+  field: DocumentTemplateField,
+  fieldIndex: number,
+  today: string,
+): void {
+  if (field.type === 'photo' || field.type === 'signature' || field.type === 'calculated') {
+    return
+  }
+
+  if (field.dataPath === 'sampling.points') {
+    generateSampling()
+    return
+  }
+
+  if (field.type === 'table') {
+    customFieldValues[field.dataPath] = buildTestTableValue(field, fieldIndex)
+    return
+  }
+
+  if (field.type === 'checkbox') {
+    setDynamicFieldValue(field.dataPath, true)
+    return
+  }
+
+  if (field.type === 'select' || field.type === 'radio' || field.type === 'passFail') {
+    const firstOption = getDynamicSelectOptions(field)[0]
+    setDynamicFieldValue(field.dataPath, firstOption?.value ?? 'Тестовое значение')
+    return
+  }
+
+  if (field.type === 'date') {
+    setDynamicFieldValue(field.dataPath, today)
+    return
+  }
+
+  if (field.type === 'time') {
+    setDynamicFieldValue(field.dataPath, '10:30')
+    return
+  }
+
+  if (field.type === 'number' || field.type === 'measurement') {
+    setDynamicFieldValue(field.dataPath, (5.8 + fieldIndex * 0.1).toFixed(1))
+    return
+  }
+
+  if (field.type === 'textarea') {
+    setDynamicFieldValue(field.dataPath, `Тестовое примечание для поля «${field.label}».`)
+    return
+  }
+
+  if (!getDynamicFieldValue(field.dataPath).trim()) {
+    setDynamicFieldValue(field.dataPath, `Тест: ${field.label}`)
+  }
+}
+
+function buildTestTableValue(
+  field: DocumentTemplateField,
+  fieldIndex: number,
+): DocumentTemplateTableValue {
+  const tableValue: DocumentTemplateTableValue = {}
+
+  for (const [rowIndex, row] of (field.tableRows ?? []).entries()) {
+    const rowValue: DocumentTemplateTableValue[string] = {}
+
+    for (const [columnIndex, column] of (field.tableColumns ?? []).entries()) {
+      if (column.type === 'checkbox') {
+        rowValue[column.id] = true
+      } else if (column.type === 'number') {
+        rowValue[column.id] = Number((5.8 + rowIndex + columnIndex * 0.1).toFixed(1))
+      } else if (column.type === 'select') {
+        rowValue[column.id] =
+          [...(column.options ?? [])].sort(
+            (firstOption, secondOption) => firstOption.sortOrder - secondOption.sortOrder,
+          )[0]?.label ?? 'Соответствует'
+      } else {
+        rowValue[column.id] = `Тест ${fieldIndex + 1}.${rowIndex + 1}`
+      }
+    }
+
+    tableValue[row.id] = rowValue
+  }
+
+  return tableValue
+}
+
+function formatDateForInput(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
 async function handleSave(): Promise<void> {
   if (!canSave.value || !authStore.currentAccount) {
     return
@@ -742,10 +1058,16 @@ async function handleSave(): Promise<void> {
   isAutosaveReady.value = false
   clearAutosaveTimer()
 
-  const savedReport = await persistDraft('ready')
+  const savedReport = await persistDraft('draft')
 
   if (savedReport) {
-    await router.push({ name: 'report-details', params: { reportId: savedReport.id } })
+    const generatedDocument = await reportDraftStore.generateDocument(savedReport.id)
+
+    if (generatedDocument) {
+      await router.push({ name: 'report-details', params: { reportId: savedReport.id } })
+    } else {
+      isAutosaveReady.value = true
+    }
   } else {
     isAutosaveReady.value = true
   }
@@ -812,9 +1134,44 @@ function buildReportInput() {
   }
 
   const resolvedCustomFieldValues = { ...customFieldValues }
+  const resolvedMainInfo = { ...mainInfo }
+  const resolvedTemperatureInfo = { ...temperatureInfo }
+  const resolvedInspectionResults = { ...inspectionResults }
+  const resolvedDescriptions = { ...descriptions }
   const resolvedSignatures = { ...signatures }
+  let resolvedExpertConclusion = expertConclusion.value
+  const resolvedRoots: Record<string, Record<string, string>> = {
+    mainInfo: resolvedMainInfo,
+    temperatureInfo: resolvedTemperatureInfo,
+    inspectionResults: resolvedInspectionResults,
+    descriptions: resolvedDescriptions,
+    signatures: resolvedSignatures,
+  }
 
   for (const field of templateSections.value.flatMap((section) => section.fields)) {
+    if (field.type === 'calculated') {
+      const calculatedValue = getCalculatedFieldValue(field)
+
+      if (field.dataPath.startsWith('custom.')) {
+        resolvedCustomFieldValues[field.dataPath] = calculatedValue
+        continue
+      }
+
+      if (field.dataPath === 'expertConclusion') {
+        resolvedExpertConclusion = calculatedValue
+        continue
+      }
+
+      const [rootKey, fieldKey] = field.dataPath.split('.')
+      const root = rootKey ? resolvedRoots[rootKey] : undefined
+
+      if (root && fieldKey) {
+        root[fieldKey] = calculatedValue
+      }
+
+      continue
+    }
+
     if (field.type !== 'signature') {
       continue
     }
@@ -838,11 +1195,11 @@ function buildReportInput() {
     workerAccountId,
     productId: productId.value,
     inspectorName: workerFullName.value,
-    mainInfo: { ...mainInfo },
-    temperatureInfo: { ...temperatureInfo },
-    inspectionResults: { ...inspectionResults },
-    descriptions: { ...descriptions },
-    expertConclusion: expertConclusion.value,
+    mainInfo: resolvedMainInfo,
+    temperatureInfo: resolvedTemperatureInfo,
+    inspectionResults: resolvedInspectionResults,
+    descriptions: resolvedDescriptions,
+    expertConclusion: resolvedExpertConclusion,
     customFieldValues: resolvedCustomFieldValues,
     sampling: {
       palletCount: sampling.palletCount,
@@ -931,9 +1288,28 @@ function hydrateExistingReport(): void {
   <main class="screen-page report-form-page">
     <div class="form-local-strip">
       <strong>Черновик · шаг {{ completedStepCount }} из {{ steps.length }}</strong>
+      <span class="autosave-status" :class="`autosave-status--${autosaveState}`" aria-live="polite">
+        {{ autosaveMessage }}
+      </span>
     </div>
 
     <form class="report-form" @submit.prevent="handleSave">
+      <aside class="test-autofill-panel">
+        <div>
+          <strong>Тестовый режим</strong>
+          <span>Временно заполняет обычные и динамические поля выбранного макета.</span>
+        </div>
+        <button
+          class="secondary-button test-autofill-panel__button"
+          type="button"
+          :disabled="!selectedTemplateId || reportDraftStore.isSaving"
+          @click="fillWithTestData"
+        >
+          Заполнить тестовыми данными
+        </button>
+        <p v-if="testAutofillNotice" aria-live="polite">{{ testAutofillNotice }}</p>
+      </aside>
+
       <nav class="report-steps" aria-label="Разделы отчета">
         <button
           v-for="(step, index) in steps"
@@ -1041,7 +1417,90 @@ function hydrateExistingReport(): void {
               </div>
             </section>
 
-            <label
+            <section
+              v-else-if="field.type === 'table'"
+              class="dynamic-special-block dynamic-field--full mobile-check-table"
+            >
+              <div class="dynamic-special-block__heading">
+                <div>
+                  <h3>{{ field.label }}</h3>
+                  <p>{{ field.helpText || 'Заполните результаты проверки по пунктам.' }}</p>
+                </div>
+                <strong v-if="field.required">Обязательно</strong>
+              </div>
+
+              <article
+                v-for="(row, rowIndex) in field.tableRows ?? []"
+                :key="row.id"
+                class="mobile-check-row"
+              >
+                <div class="mobile-check-row__heading">
+                  <span>{{ rowIndex + 1 }}</span>
+                  <div>
+                    <strong>{{ row.label }}</strong>
+                    <small v-if="row.helpText">{{ row.helpText }}</small>
+                  </div>
+                </div>
+                <div class="mobile-check-row__fields">
+                  <label
+                    v-for="column in field.tableColumns ?? []"
+                    :key="column.id"
+                    class="field-label"
+                  >
+                    {{ column.label }}
+                    <input
+                      v-if="column.type === 'checkbox'"
+                      class="check-control"
+                      type="checkbox"
+                      :checked="getTableCellValue(field.dataPath, row.id, column.id) === true"
+                      @change="
+                        setTableCellValue(
+                          field.dataPath,
+                          row.id,
+                          column.id,
+                          getEventChecked($event),
+                        )
+                      "
+                    />
+                    <select
+                      v-else-if="column.type === 'select'"
+                      class="field-control"
+                      :value="getTableCellValue(field.dataPath, row.id, column.id)"
+                      @change="
+                        setTableCellValue(field.dataPath, row.id, column.id, getEventValue($event))
+                      "
+                    >
+                      <option value="" disabled hidden>Выберите</option>
+                      <option
+                        v-for="option in column.options ?? []"
+                        :key="option.id"
+                        :value="option.label"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <span v-else class="input-with-unit">
+                      <input
+                        class="field-control"
+                        :type="column.type === 'number' ? 'number' : 'text'"
+                        :value="getTableCellValue(field.dataPath, row.id, column.id)"
+                        @input="
+                          setTableCellValue(
+                            field.dataPath,
+                            row.id,
+                            column.id,
+                            getEventValue($event),
+                          )
+                        "
+                      />
+                      <small v-if="column.unit">{{ column.unit }}</small>
+                    </span>
+                  </label>
+                </div>
+              </article>
+            </section>
+
+            <section
               v-else
               class="field-label dynamic-field"
               :class="{ 'dynamic-field--full': field.width === 'full' }"
@@ -1060,6 +1519,40 @@ function hydrateExistingReport(): void {
                 readonly
               />
 
+              <label v-else-if="field.type === 'checkbox'" class="boolean-field">
+                <input
+                  type="checkbox"
+                  :checked="getDynamicBooleanValue(field.dataPath)"
+                  @change="setDynamicFieldValue(field.dataPath, getEventChecked($event))"
+                />
+                <span>{{ field.placeholder || 'Подтверждаю' }}</span>
+              </label>
+
+              <div
+                v-else-if="field.type === 'radio' || field.type === 'passFail'"
+                class="choice-card-grid"
+              >
+                <label
+                  v-for="option in getDynamicSelectOptions(field)"
+                  :key="option.id"
+                  class="choice-card"
+                >
+                  <input
+                    type="radio"
+                    :name="field.id"
+                    :value="option.value"
+                    :checked="getDynamicFieldValue(field.dataPath) === option.value"
+                    @change="setDynamicFieldValue(field.dataPath, option.value)"
+                  />
+                  <span>{{ option.label }}</span>
+                </label>
+              </div>
+
+              <output v-else-if="field.type === 'calculated'" class="calculated-field">
+                {{ getCalculatedFieldValue(field) || 'Будет рассчитано автоматически' }}
+                <small v-if="field.unit">{{ field.unit }}</small>
+              </output>
+
               <select
                 v-else-if="field.type === 'select' && getDynamicSelectOptions(field).length"
                 class="field-control"
@@ -1067,7 +1560,7 @@ function hydrateExistingReport(): void {
                 :required="field.required"
                 @change="setDynamicFieldValue(field.dataPath, getEventValue($event))"
               >
-                <option value="">
+                <option value="" disabled hidden>
                   {{ field.placeholder || 'Выберите значение' }}
                 </option>
                 <option
@@ -1088,6 +1581,24 @@ function hydrateExistingReport(): void {
                 @input="setDynamicFieldValue(field.dataPath, getEventValue($event))"
               />
 
+              <div v-else-if="field.type === 'measurement'" class="measurement-field">
+                <div v-if="field.standardValue" class="measurement-field__standard">
+                  Норма: <strong>{{ field.standardValue }}</strong>
+                </div>
+                <span class="input-with-unit">
+                  <input
+                    class="field-control"
+                    type="number"
+                    inputmode="decimal"
+                    :value="getDynamicFieldValue(field.dataPath)"
+                    :placeholder="field.placeholder"
+                    :required="field.required"
+                    @input="setDynamicFieldValue(field.dataPath, getEventValue($event))"
+                  />
+                  <small v-if="field.unit">{{ field.unit }}</small>
+                </span>
+              </div>
+
               <input
                 v-else
                 class="field-control"
@@ -1101,7 +1612,7 @@ function hydrateExistingReport(): void {
               <small v-if="field.helpText" class="dynamic-field__help">
                 {{ field.helpText }}
               </small>
-            </label>
+            </section>
           </template>
 
           <p v-if="!activeTemplateSection.fields.length" class="empty-state dynamic-field--full">
@@ -1422,12 +1933,12 @@ function hydrateExistingReport(): void {
           type="submit"
           :disabled="!canSave || reportDraftStore.isSaving"
         >
-          {{ reportDraftStore.isSaving ? 'Отправляем...' : 'Отправить отчет администратору' }}
+          {{ reportDraftStore.isSaving ? 'Создаем PDF...' : 'Сформировать и проверить PDF' }}
         </button>
       </div>
 
       <p v-if="isLastStep && !canSave" class="form-hint">
-        Заполните обязательные поля, чтобы отправить отчет администратору.
+        Заполните обязательные поля, чтобы сформировать итоговый PDF.
       </p>
 
       <p v-if="reportDraftStore.errorMessage" class="error-message">
@@ -1446,6 +1957,44 @@ function hydrateExistingReport(): void {
 .report-form {
   display: grid;
   gap: 16px;
+}
+
+.test-autofill-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  border: 1px dashed #b87a13;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff8e8;
+  color: var(--color-text);
+}
+
+.test-autofill-panel > div {
+  display: grid;
+  gap: 2px;
+}
+
+.test-autofill-panel strong {
+  color: #8a5a00;
+  font-size: 0.86rem;
+  font-weight: 900;
+}
+
+.test-autofill-panel span,
+.test-autofill-panel p {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+}
+
+.test-autofill-panel p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.test-autofill-panel__button {
+  white-space: nowrap;
 }
 
 .dynamic-field-grid {
@@ -1510,6 +2059,108 @@ function hydrateExistingReport(): void {
   font-weight: 900;
 }
 
+.mobile-check-table {
+  gap: 12px;
+}
+
+.mobile-check-row {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: #f7faf8;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+.mobile-check-row__heading {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.mobile-check-row__heading > span {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  place-items: center;
+  color: #fff;
+  background: var(--color-primary);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.mobile-check-row__heading div,
+.mobile-check-row__fields {
+  display: grid;
+  gap: 8px;
+}
+
+.mobile-check-row__heading small {
+  color: var(--color-text-muted);
+}
+
+.mobile-check-row__fields {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.boolean-field,
+.choice-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 46px;
+  padding: 10px 12px;
+  background: #f7faf8;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+}
+
+.choice-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.choice-card:has(input:checked) {
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  border-color: var(--color-primary);
+}
+
+.measurement-field,
+.input-with-unit {
+  display: grid;
+  gap: 6px;
+}
+
+.input-with-unit {
+  position: relative;
+}
+
+.input-with-unit > small {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  color: var(--color-text-muted);
+  transform: translateY(-50%);
+}
+
+.measurement-field__standard {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+}
+
+.calculated-field {
+  min-height: 46px;
+  padding: 12px;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  border-radius: 10px;
+  font-weight: 850;
+}
+
 .form-local-strip {
   display: flex;
   align-items: center;
@@ -1526,6 +2177,19 @@ function hydrateExistingReport(): void {
 .form-local-strip strong {
   font-size: 0.82rem;
   font-weight: 850;
+}
+
+.autosave-status {
+  margin-left: auto;
+}
+
+.autosave-status--idle,
+.autosave-status--saving {
+  color: #8a5a00;
+}
+
+.autosave-status--error {
+  color: var(--color-danger);
 }
 
 .report-steps {
@@ -1730,9 +2394,26 @@ function hydrateExistingReport(): void {
 }
 
 @media (max-width: 520px) {
+  .test-autofill-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .test-autofill-panel p {
+    grid-column: auto;
+  }
+
+  .test-autofill-panel__button {
+    width: 100%;
+    white-space: normal;
+  }
+
   .form-local-strip {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .autosave-status {
+    margin-left: 0;
   }
 
   .wizard-actions {

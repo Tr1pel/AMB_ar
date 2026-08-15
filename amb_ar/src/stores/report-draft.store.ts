@@ -5,11 +5,16 @@ import { PRODUCT_OPTIONS } from '@/shared/constants/products'
 import {
   createReportDraft,
   createReportDraftFromTemplate,
+  generateReportDocumentOnServer,
   getReportDraftDetails,
+  listArchivedReportDrafts,
   listReportDrafts,
   listWorkerReportDrafts,
+  permanentlyDeleteArchivedReport,
+  restoreArchivedReport,
   saveGeneratedDocument,
   softDeleteReportDraft,
+  submitReportDraft,
   type CreateReportDraftInput,
   type SaveReportDraftOptions,
 } from '@/shared/repositories/report-draft-repository'
@@ -18,6 +23,7 @@ import type { GeneratedDocument, ProductPhoto, ReportDraft } from '@/types/repor
 
 export const useReportDraftStore = defineStore('reportDraft', () => {
   const reports = ref<ReportDraft[]>([])
+  const archivedReports = ref<ReportDraft[]>([])
   const selectedReport = ref<ReportDraft | null>(null)
   const selectedPhotos = ref<ProductPhoto[]>([])
   const selectedDocuments = ref<GeneratedDocument[]>([])
@@ -51,12 +57,22 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
       : []
   }
 
+  async function refreshArchivedReports(): Promise<void> {
+    const authStore = useAuthStore()
+
+    archivedReports.value =
+      authStore.isAdmin && authStore.currentAccount
+        ? await listArchivedReportDrafts(authStore.currentAccount.id)
+        : []
+  }
+
   async function loadWorkerHistory(): Promise<void> {
     isLoading.value = true
     errorMessage.value = null
 
     try {
       await refreshWorkerReports()
+      void refreshWorkerReports().catch(() => undefined)
     } catch (error) {
       errorMessage.value = getErrorMessage(error)
     } finally {
@@ -70,6 +86,19 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
 
     try {
       await refreshReports()
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function loadArchive(): Promise<void> {
+    isLoading.value = true
+    errorMessage.value = null
+
+    try {
+      await refreshArchivedReports()
     } catch (error) {
       errorMessage.value = getErrorMessage(error)
     } finally {
@@ -98,7 +127,7 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
       if (authStore.isWorker) {
         await refreshWorkerReports()
       } else {
-        await refreshReports()
+        await Promise.all([refreshReports(), refreshArchivedReports()])
       }
 
       return result.draft
@@ -187,13 +216,67 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
       if (authStore.isWorker) {
         await refreshWorkerReports()
       } else {
-        await refreshReports()
+        await Promise.all([refreshReports(), refreshArchivedReports()])
       }
 
       return true
     } catch (error) {
       errorMessage.value = getErrorMessage(error)
 
+      return false
+    } finally {
+      isSaving.value = false
+    }
+  }
+
+  async function deleteArchivedReport(reportId: string): Promise<boolean> {
+    const authStore = useAuthStore()
+
+    if (!authStore.isAdmin || !authStore.currentAccount?.id) {
+      errorMessage.value = 'Нужно войти под администратором'
+      return false
+    }
+
+    isSaving.value = true
+    errorMessage.value = null
+
+    try {
+      await permanentlyDeleteArchivedReport(reportId, authStore.currentAccount.id)
+      archivedReports.value = archivedReports.value.filter((report) => report.id !== reportId)
+
+      if (selectedReport.value?.id === reportId) {
+        selectedReport.value = null
+        selectedPhotos.value = []
+        selectedDocuments.value = []
+      }
+
+      return true
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
+      return false
+    } finally {
+      isSaving.value = false
+    }
+  }
+
+  async function restoreReport(reportId: string): Promise<boolean> {
+    const authStore = useAuthStore()
+
+    if (!authStore.isAdmin || !authStore.currentAccount?.id) {
+      errorMessage.value = 'Нужно войти под администратором'
+      return false
+    }
+
+    isSaving.value = true
+    errorMessage.value = null
+
+    try {
+      await restoreArchivedReport(reportId, authStore.currentAccount.id)
+      await Promise.all([refreshReports(), refreshArchivedReports()])
+
+      return true
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
       return false
     } finally {
       isSaving.value = false
@@ -243,6 +326,65 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     }
   }
 
+  async function generateDocument(reportId: string): Promise<GeneratedDocument | null> {
+    isSaving.value = true
+    errorMessage.value = null
+
+    try {
+      const accountId = useAuthStore().currentAccount?.id
+
+      if (!accountId) {
+        throw new Error('Нужно войти в систему')
+      }
+
+      const document = await generateReportDocumentOnServer(reportId, accountId)
+
+      selectedDocuments.value = [...selectedDocuments.value, document]
+      await loadReport(reportId)
+
+      if (useAuthStore().isWorker) {
+        await refreshWorkerReports()
+      } else {
+        await refreshReports()
+      }
+
+      return document
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
+      return null
+    } finally {
+      isSaving.value = false
+    }
+  }
+
+  async function submitReport(reportId: string): Promise<ReportDraft | null> {
+    isSaving.value = true
+    errorMessage.value = null
+
+    try {
+      const authStore = useAuthStore()
+      const accountId = authStore.currentAccount?.id
+
+      if (!accountId || !authStore.isWorker) {
+        throw new Error('Нужно войти под аккаунтом инспектора')
+      }
+
+      const details = await submitReportDraft(reportId, accountId)
+
+      selectedReport.value = details.draft
+      selectedPhotos.value = details.photos
+      selectedDocuments.value = details.documents
+      await refreshWorkerReports()
+
+      return details.draft
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
+      return null
+    } finally {
+      isSaving.value = false
+    }
+  }
+
   function setError(error: unknown): void {
     errorMessage.value = getErrorMessage(error)
   }
@@ -254,6 +396,7 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
   return {
     productOptions: PRODUCT_OPTIONS,
     reports,
+    archivedReports,
     selectedReport,
     selectedPhotos,
     selectedDocuments,
@@ -263,14 +406,20 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     hasReports,
     latestWorkerDraft,
     refreshReports,
+    refreshArchivedReports,
     refreshWorkerReports,
     loadHome,
+    loadArchive,
     loadWorkerHistory,
     createReport,
     startReportFromTemplate,
     loadReport,
     deleteReport,
+    deleteArchivedReport,
+    restoreReport,
     saveDocument,
+    generateDocument,
+    submitReport,
     setError,
     clearError,
   }
