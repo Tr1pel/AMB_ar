@@ -771,7 +771,6 @@ function formatTime(timestamp: number): string {
     <template v-if="!editorTemplate">
       <section class="screen-heading template-heading">
         <div>
-          <p class="screen-kicker">Администратор</p>
           <h1 class="screen-title">Макеты отчетов</h1>
           <p class="screen-subtitle">
             Создавайте структуру отчета, поля и варианты для каждого макета.

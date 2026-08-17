@@ -182,7 +182,6 @@ function downloadBlob(blob: Blob, fileName: string): void {
     <section class="reports-section">
       <div class="reports-section__header">
         <div>
-          <p class="screen-kicker">История проверок</p>
           <h2>Сохраненные отчеты</h2>
         </div>
         <span>{{ filteredReports.length }}</span>

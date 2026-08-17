@@ -43,7 +43,7 @@ const navItems = computed<NavigationItem[]>(() => {
         to: '/admin/reports/archive',
         label: 'Архив отчетов',
         shortLabel: 'Архив',
-        icon: '/icons/admin-reports.svg',
+        icon: '/icons/trash-clock-svgrepo-com.svg',
         iconType: 'svg',
       },
       {
@@ -180,7 +180,7 @@ async function signOut(): Promise<void> {
           <span class="mobile-brand">
             <img src="/runash-logo.png" alt="Рунаш" />
           </span>
-          <h1>{{ pageTitle }}</h1>
+          <h1 v-if="pageTitle">{{ pageTitle }}</h1>
         </div>
         <div class="topbar-account">
           <span class="account-avatar">{{ initials }}</span>

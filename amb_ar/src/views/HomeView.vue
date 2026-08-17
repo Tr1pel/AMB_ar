@@ -410,7 +410,6 @@ function downloadBlob(blob: Blob, fileName: string): void {
     <section class="reports-section">
       <div class="reports-section__header">
         <div>
-          <p class="screen-kicker">Журнал предприятия</p>
           <h2>{{ props.archiveMode ? 'Архивные отчеты' : 'Все отчеты' }}</h2>
         </div>
         <span>{{ filteredReports.length }}</span>
@@ -676,7 +675,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
 
 .report-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px;
   border: 1px solid var(--color-border);
@@ -689,14 +688,18 @@ function downloadBlob(blob: Blob, fileName: string): void {
 }
 
 .report-card__body {
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
 }
 
 .report-card__title-row {
   align-items: flex-start;
+  flex-wrap: nowrap;
 }
 
 .report-card__title {
+  flex: 1 1 auto;
   min-width: 0;
   font-size: 1rem;
   font-weight: 900;
@@ -759,12 +762,18 @@ function downloadBlob(blob: Blob, fileName: string): void {
 
 .report-card__photos {
   display: flex;
+  grid-column: 1;
+  grid-row: 1;
   align-items: center;
-  align-self: stretch;
+  align-self: end;
+  justify-self: end;
 }
 
 .report-card__actions {
   display: grid;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
   min-width: 108px;
   gap: 8px;
 }
@@ -825,6 +834,8 @@ function downloadBlob(blob: Blob, fileName: string): void {
   }
 
   .report-card__actions {
+    grid-column: 1;
+    grid-row: auto;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
