@@ -157,7 +157,7 @@ export async function generateTemplateReportPdf({ report, photos, template }) {
       continue
     }
 
-    for (const [photoPageIndex, pagePhotos] of chunk(fieldPhotos, 2).entries()) {
+    for (const [photoPageIndex, pagePhotos] of chunk(fieldPhotos, 6).entries()) {
       if (state.hasDocumentContent || photoPageIndex > 0) {
         beginPage(state, report, renderSpec.documentTitle, templateSubtitle, logo)
       }
@@ -626,35 +626,48 @@ function drawPhotoContent(state, report, photos) {
     return
   }
 
-  for (const photo of photos) {
-    const image = decodeSupportedPhoto(photo)
-    const imageHeight = photos.length > 1 ? 278 : 610
+  const columnCount = photos.length === 1 ? 1 : 2
+  const rowCount = Math.ceil(photos.length / columnCount)
+  const columnGap = 8
+  const rowGap = 8
+  const gridTop = state.y + 8
+  const availableHeight = CONTENT_BOTTOM - gridTop
+  const cellWidth = (CONTENT_WIDTH - columnGap * (columnCount - 1)) / columnCount
+  const cellHeight = (availableHeight - rowGap * (rowCount - 1)) / rowCount
 
-    fillRect(document, PAGE_MARGIN, state.y + 8, CONTENT_WIDTH, imageHeight, '#f7faf7')
-    document.image(image, PAGE_MARGIN + 6, state.y + 14, {
-      fit: [CONTENT_WIDTH - 12, imageHeight - 12],
+  for (const [photoIndex, photo] of photos.entries()) {
+    const image = decodeSupportedPhoto(photo)
+    const columnIndex = photoIndex % columnCount
+    const rowIndex = Math.floor(photoIndex / columnCount)
+    const cellX = PAGE_MARGIN + columnIndex * (cellWidth + columnGap)
+    const cellY = gridTop + rowIndex * (cellHeight + rowGap)
+    const imageHeight = Math.max(80, cellHeight - 34)
+
+    fillRect(document, cellX, cellY, cellWidth, imageHeight, '#f7faf7')
+    document.image(image, cellX + 6, cellY + 6, {
+      fit: [cellWidth - 12, imageHeight - 12],
       align: 'center',
       valign: 'center',
     })
-    strokeRect(document, PAGE_MARGIN, state.y + 8, CONTENT_WIDTH, imageHeight)
-    state.y += imageHeight + 12
-    drawText(document, photo.caption || photo.fileName, PAGE_MARGIN + 4, state.y, 8.5, TEXT_COLOR, true, {
-      width: 320,
-      height: 16,
+    strokeRect(document, cellX, cellY, cellWidth, imageHeight)
+    drawText(document, photo.caption?.trim() || '', cellX + 4, cellY + imageHeight + 3, 7.3, TEXT_COLOR, true, {
+      width: cellWidth - 8,
+      height: 12,
       ellipsis: true,
     })
     drawText(
       document,
       `${formatDate(photo.createdAt)} · ${report.inspectorName || '—'}`,
-      PAGE_WIDTH - PAGE_MARGIN - 205,
-      state.y,
-      7.5,
+      cellX + 4,
+      cellY + imageHeight + 16,
+      6.2,
       MUTED_TEXT,
       false,
-      { width: 201, height: 16, align: 'right', ellipsis: true },
+      { width: cellWidth - 8, height: 10, align: 'right', ellipsis: true },
     )
-    state.y += 19
   }
+
+  state.y = gridTop + rowCount * cellHeight + (rowCount - 1) * rowGap
 }
 
 function formatFieldValue(report, field, display) {

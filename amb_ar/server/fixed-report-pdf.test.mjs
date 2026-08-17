@@ -130,6 +130,63 @@ test('system and user templates use the same fixed renderer', async () => {
   }
 })
 
+test('a photo field fits six photos on one page and moves the seventh to the next page', async () => {
+  const photoField = {
+    id: 'field-photos',
+    label: 'Фотографии партии',
+    type: 'photo',
+    width: 'full',
+    dataPath: 'photos',
+  }
+  const section = {
+    id: 'section-photos',
+    title: 'Фотографии',
+    description: '',
+    fields: [photoField],
+  }
+  const template = {
+    id: 'document-template-photos',
+    name: 'Фотоотчёт',
+    inputSchema: { version: 1, steps: [section] },
+    renderSpec: {
+      version: 1,
+      mode: 'flow',
+      layout: 'branded',
+      pageSize: 'A4',
+      documentTitle: 'Фотоотчёт',
+      sections: [createRenderSection(section, false)],
+    },
+  }
+  const report = {
+    id: 'report-six-photos',
+    reportNumber: 'AMB-QC-MSC01-20260818-0001',
+    inspectorName: 'Инспектор',
+    productName: 'Товар',
+    updatedAt: Date.UTC(2026, 7, 18),
+    mainInfo: {},
+  }
+  const imageBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  const photos = Array.from({ length: 7 }, (_, index) => ({
+    id: `photo-${index + 1}`,
+    templateFieldId: photoField.id,
+    fileName: `photo-${index + 1}.png`,
+    blobBase64: imageBase64,
+    caption: `Фотография ${index + 1}`,
+    createdAt: Date.UTC(2026, 7, 18),
+  }))
+
+  const sixPhotoPdf = await generateTemplateReportPdf({
+    report,
+    photos: photos.slice(0, 6),
+    template,
+  })
+  const sevenPhotoPdf = await generateTemplateReportPdf({ report, photos, template })
+
+  assert.equal(sixPhotoPdf.toString('latin1').match(/\/Type\s*\/Page\b/g)?.length ?? 0, 1)
+  assert.equal(sevenPhotoPdf.toString('latin1').match(/\/Type\s*\/Page\b/g)?.length ?? 0, 2)
+})
+
 function createRenderSection(section, pageBreakBefore) {
   return {
     id: `render-${section.id}`,

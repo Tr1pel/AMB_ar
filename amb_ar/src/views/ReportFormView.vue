@@ -851,6 +851,14 @@ function appendPhoto(file: File, category: ReportPhotoCategory, templateFieldId?
   ]
 }
 
+function updatePhotoCaption(photoId: string, caption: string): void {
+  const photo = photos.value.find((item) => item.id === photoId)
+
+  if (photo) {
+    photo.caption = caption
+  }
+}
+
 function removePhoto(photoId: string): void {
   const photo = photos.value.find((item) => item.id === photoId)
 
@@ -1290,14 +1298,22 @@ function hydrateExistingReport(): void {
 
 <template>
   <main class="screen-page report-form-page">
-    <div class="form-local-strip">
+    <section v-if="!isFormReady" class="form-loading app-card" aria-live="polite">
+      <span class="form-loading__spinner" aria-hidden="true" />
+      <div>
+        <strong>Загружаем выбранный макет…</strong>
+        <span>Подготавливаем поля и сохраненный черновик.</span>
+      </div>
+    </section>
+
+    <div v-if="isFormReady" class="form-local-strip">
       <strong>Черновик · шаг {{ completedStepCount }} из {{ steps.length }}</strong>
       <span class="autosave-status" :class="`autosave-status--${autosaveState}`" aria-live="polite">
         {{ autosaveMessage }}
       </span>
     </div>
 
-    <form class="report-form" @submit.prevent="handleSave">
+    <form v-if="isFormReady" class="report-form" @submit.prevent="handleSave">
       <aside class="test-autofill-panel">
         <div>
           <strong>Тестовый режим</strong>
@@ -1358,19 +1374,9 @@ function hydrateExistingReport(): void {
                 :photos="getPhotosByTemplateField(field.id)"
                 :disabled="reportDraftStore.isSaving"
                 @select-photo="(file) => handleTemplatePhotoSelected(field.id, file)"
+                @update-caption="updatePhotoCaption"
+                @remove-photo="removePhoto"
               />
-
-              <label
-                v-for="photo in getPhotosByTemplateField(field.id)"
-                :key="photo.id"
-                class="field-label photo-caption"
-              >
-                Подпись к фото
-                <input v-model="photo.caption" class="field-control" />
-                <button class="text-button" type="button" @click="removePhoto(photo.id)">
-                  Удалить фото
-                </button>
-              </label>
             </section>
 
             <section
@@ -1880,19 +1886,9 @@ function hydrateExistingReport(): void {
               :photos="getPhotosByCategory(category.id)"
               :disabled="reportDraftStore.isSaving"
               @select-photo="(file) => handlePhotoSelected(category.id, file)"
+              @update-caption="updatePhotoCaption"
+              @remove-photo="removePhoto"
             />
-
-            <label
-              v-for="photo in getPhotosByCategory(category.id)"
-              :key="photo.id"
-              class="field-label photo-caption"
-            >
-              Подпись к фото
-              <input v-model="photo.caption" class="field-control" />
-              <button class="text-button" type="button" @click="removePhoto(photo.id)">
-                Удалить фото
-              </button>
-            </label>
           </section>
         </div>
       </FormSection>
@@ -1961,6 +1957,45 @@ function hydrateExistingReport(): void {
 .report-form {
   display: grid;
   gap: 16px;
+}
+
+.form-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 96px;
+  padding: 20px;
+}
+
+.form-loading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.form-loading strong {
+  font-size: 0.92rem;
+  font-weight: 900;
+}
+
+.form-loading span:last-child {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+}
+
+.form-loading__spinner {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border: 3px solid var(--color-primary-soft);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: form-loading-spin 0.8s linear infinite;
+}
+
+@keyframes form-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .test-autofill-panel {
@@ -2351,16 +2386,6 @@ function hydrateExistingReport(): void {
   color: var(--color-primary);
   font-size: 0.78rem;
   font-weight: 850;
-}
-
-.photo-caption {
-  margin-top: 4px;
-}
-
-.text-button {
-  justify-self: start;
-  min-height: 36px;
-  color: var(--color-danger);
 }
 
 .wizard-actions {
