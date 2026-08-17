@@ -6,12 +6,16 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 
+const sessionCookies = new Map()
+const testPassword = 'Test-Password-2026!'
+
 test('worker submits a report and admin processes server-persisted binaries', async (context) => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'amb-ar-server-test-'))
   const databasePath = join(temporaryDirectory, 'flow.sqlite')
   process.env.AMB_AR_API_PORT = '0'
   process.env.AMB_AR_DATABASE_PATH = databasePath
   process.env.AMB_AR_HOST = '127.0.0.1'
+  process.env.AMB_AR_INITIAL_PASSWORD = testPassword
 
   const { server, closeServer, purgeExpiredArchivedReportsNow } = await import('./index.mjs')
 
@@ -22,19 +26,102 @@ test('worker submits a report and admin processes server-persisted binaries', as
 
   const port = await waitForServer(server)
 
-  const admin = await request(port, '/api/accounts/login?loginNumber=1001')
-  const worker = await request(port, '/api/accounts/login?loginNumber=2001')
-  const otherWorker = await request(port, '/api/accounts/login?loginNumber=2002')
+  const admin = await login(port, '1001')
+  const worker = await login(port, '2001')
+  const otherWorker = await login(port, '2002')
 
   assert.equal(admin.status, 200)
   assert.equal(admin.body.role, 'admin')
   assert.equal(worker.body.role, 'worker')
   assert.equal(otherWorker.body.role, 'worker')
+  assert.equal('passwordHash' in admin.body, false)
+
+  const demoWorker = await request(port, '/api/auth/demo', {
+    method: 'POST',
+    body: { role: 'worker' },
+  })
+  assert.equal(demoWorker.status, 200)
+  assert.equal(demoWorker.body.role, 'worker')
+  const demoSession = await request(port, '/api/auth/session', {
+    accountId: demoWorker.body.id,
+  })
+  assert.equal(demoSession.status, 200)
+
+  const forgedSession = await request(port, '/api/accounts', {
+    headers: { 'X-Account-Id': admin.body.id },
+  })
+  assert.equal(forgedSession.status, 401)
 
   const forbiddenAccounts = await request(port, '/api/accounts', {
     accountId: worker.body.id,
   })
   assert.equal(forbiddenAccounts.status, 403)
+
+  const forbiddenGeneratedNumber = await request(port, '/api/accounts/generate-login-number', {
+    method: 'POST',
+    accountId: worker.body.id,
+  })
+  assert.equal(forbiddenGeneratedNumber.status, 403)
+
+  const generatedNumber = await request(port, '/api/accounts/generate-login-number', {
+    method: 'POST',
+    accountId: admin.body.id,
+    body: { role: 'worker' },
+  })
+  assert.equal(generatedNumber.status, 200)
+  assert.equal(generatedNumber.body.loginNumber, '2003')
+
+  const generatedAdminNumber = await request(port, '/api/accounts/generate-login-number', {
+    method: 'POST',
+    accountId: admin.body.id,
+    body: { role: 'admin' },
+  })
+  assert.equal(generatedAdminNumber.status, 200)
+  assert.equal(generatedAdminNumber.body.loginNumber, '1002')
+
+  const createdAccountPassword = 'Generated-Test-82!'
+  const createdAccount = await request(port, '/api/accounts', {
+    method: 'POST',
+    accountId: admin.body.id,
+    body: {
+      loginNumber: '3001',
+      fullName: 'Тестовый сотрудник',
+      role: 'worker',
+      password: createdAccountPassword,
+    },
+  })
+  assert.equal(createdAccount.status, 201)
+  assert.equal('passwordHash' in createdAccount.body, false)
+
+  const passwordDatabase = new DatabaseSync(databasePath)
+  const storedPasswordHash = passwordDatabase
+    .prepare('SELECT password_hash FROM accounts WHERE id = ?')
+    .get(createdAccount.body.id).password_hash
+  passwordDatabase.close()
+  assert.match(storedPasswordHash, /^\$argon2id\$/)
+  assert.notEqual(storedPasswordHash, createdAccountPassword)
+
+  const wrongPassword = await request(port, '/api/auth/login', {
+    method: 'POST',
+    body: { loginNumber: '3001', password: 'wrong-password' },
+  })
+  assert.equal(wrongPassword.status, 401)
+
+  const createdAccountLogin = await request(port, '/api/auth/login', {
+    method: 'POST',
+    body: { loginNumber: '3001', password: createdAccountPassword },
+  })
+  assert.equal(createdAccountLogin.status, 200)
+
+  const logout = await request(port, '/api/auth/logout', {
+    method: 'POST',
+    accountId: createdAccount.body.id,
+  })
+  assert.equal(logout.status, 200)
+  const expiredSession = await request(port, '/api/auth/session', {
+    accountId: createdAccount.body.id,
+  })
+  assert.equal(expiredSession.status, 401)
 
   const seedTemplate = await request(port, '/api/document-templates/seed', {
     method: 'POST',
@@ -80,6 +167,8 @@ test('worker submits a report and admin processes server-persisted binaries', as
     body: { draft, photos: [photo, secondaryPhoto] },
   })
   assert.equal(savedDraft.status, 200)
+  assert.match(savedDraft.body.draft.reportNumber, /^AMB-QC-MSC01-\d{8}-0001$/)
+  assert.equal(savedDraft.body.draft.reportNumber.includes('TEST'), false)
   assert.equal(savedDraft.body.draft.status, 'draft')
   assert.equal(savedDraft.body.draft.workerAccountId, worker.body.id)
   assert.equal(
@@ -133,11 +222,18 @@ test('worker submits a report and admin processes server-persisted binaries', as
     method: 'PUT',
     accountId: otherWorker.body.id,
     body: {
-      draft: createDraft(otherReportId, otherWorker.body.id),
+      draft: {
+        ...createDraft(otherReportId, otherWorker.body.id),
+        reportNumber: 'AMB-QC-EVIL-20000101-9999',
+      },
       photos: [otherPhoto],
     },
   })
   assert.equal(otherWorkerDraft.status, 200)
+  assert.equal(
+    otherWorkerDraft.body.draft.reportNumber,
+    savedDraft.body.draft.reportNumber.replace(/0001$/, '0002'),
+  )
 
   const foreignPhotoCollision = await request(port, `/api/reports/${reportId}`, {
     method: 'PUT',
@@ -607,6 +703,10 @@ test('worker submits a report and admin processes server-persisted binaries', as
     },
   })
   assert.equal(savedPhotoOnlyReport.status, 200)
+  assert.equal(
+    savedPhotoOnlyReport.body.draft.reportNumber,
+    savedDraft.body.draft.reportNumber.replace(/0001$/, '0004'),
+  )
   assert.equal(savedPhotoOnlyReport.body.draft.productId, '')
   assert.equal(savedPhotoOnlyReport.body.draft.productName, photoOnlyTemplate.name)
   assert.equal(savedPhotoOnlyReport.body.draft.mainInfo.productName, photoOnlyTemplate.name)
@@ -643,6 +743,23 @@ test('worker submits a report and admin processes server-persisted binaries', as
     { accountId: admin.body.id },
   )
   assert.equal(deletedActiveTemplateDetails.status, 404)
+
+  const seedAfterDeletion = await request(port, '/api/document-templates/seed', {
+    method: 'POST',
+    body: createTemplate(),
+  })
+  assert.equal(seedAfterDeletion.status, 200)
+  assert.equal(typeof seedAfterDeletion.body._deletedAt, 'number')
+
+  const templatesAfterSeedRetry = await request(port, '/api/document-templates', {
+    accountId: admin.body.id,
+  })
+  assert.equal(
+    templatesAfterSeedRetry.body.some(
+      (template) => template.id === 'document-template-quality-standard',
+    ),
+    false,
+  )
 })
 
 function createTemplate() {
@@ -843,10 +960,10 @@ function createDraft(id, workerAccountId) {
 }
 
 async function request(port, path, options = {}) {
-  const headers = {}
+  const headers = { ...options.headers }
 
   if (options.accountId) {
-    headers['X-Account-Id'] = options.accountId
+    headers.Cookie = sessionCookies.get(options.accountId) ?? ''
   }
 
   if (options.body !== undefined) {
@@ -859,8 +976,20 @@ async function request(port, path, options = {}) {
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   })
   const body = await response.json()
+  const setCookie = response.headers.get('set-cookie')
+
+  if (setCookie && body?.id) {
+    sessionCookies.set(body.id, setCookie.split(';', 1)[0])
+  }
 
   return { status: response.status, body }
+}
+
+function login(port, loginNumber) {
+  return request(port, '/api/auth/login', {
+    method: 'POST',
+    body: { loginNumber, password: testPassword },
+  })
 }
 
 async function waitForServer(server) {

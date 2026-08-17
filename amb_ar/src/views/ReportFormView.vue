@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 
 import FormSection from '@/components/reports/FormSection.vue'
@@ -133,6 +133,7 @@ const draftId = ref<string | null>(null)
 const autosaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 const lastSavedAt = ref<number | null>(null)
 const isAutosaveReady = ref(false)
+const isFormReady = ref(false)
 const testAutofillNotice = ref('')
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null
 let activeSavePromise: Promise<ReportDraft | null> | null = null
@@ -406,6 +407,7 @@ watch(
 )
 
 onMounted(async () => {
+  isFormReady.value = false
   await Promise.all([reportTemplateStore.loadOptions(), documentTemplateStore.loadTemplates()])
 
   await reportDraftStore.loadReport(props.reportId)
@@ -422,6 +424,8 @@ onMounted(async () => {
   hydrateExistingReport()
 
   isAutosaveReady.value = true
+  await nextTick()
+  isFormReady.value = true
 })
 
 onUnmounted(() => {
@@ -885,7 +889,7 @@ function fillWithTestData(): void {
   const compactDate = today.replaceAll('-', '')
 
   Object.assign(mainInfo, {
-    orderNumber: `TEST-${compactDate}-001`,
+    orderNumber: `PO-${compactDate}-001`,
     zost: 'ZOST-TEST-01',
     shipper: 'ООО «Тестовый поставщик»',
     trailerNumber: 'А123ВС77',
@@ -1004,7 +1008,7 @@ function fillDynamicFieldWithTestData(
   }
 
   if (!getDynamicFieldValue(field.dataPath).trim()) {
-    setDynamicFieldValue(field.dataPath, `Тест: ${field.label}`)
+    setDynamicFieldValue(field.dataPath, field.label)
   }
 }
 
@@ -1302,7 +1306,7 @@ function hydrateExistingReport(): void {
         <button
           class="secondary-button test-autofill-panel__button"
           type="button"
-          :disabled="!selectedTemplateId || reportDraftStore.isSaving"
+          :disabled="!isFormReady || !selectedTemplateId || reportDraftStore.isSaving"
           @click="fillWithTestData"
         >
           Заполнить тестовыми данными

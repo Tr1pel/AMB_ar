@@ -551,30 +551,42 @@ function beginPage(state, report, documentTitle, templateName, logo) {
 
   const metadataY = 138.7
   const metadataX = 138.7
-  const metadataWidths = [67.5, 92.2, 67.5, 92.2]
-  const metadata = [
-    ['Report ID:', true, DARK_GREEN, '#ffffff'],
-    [report.mainInfo?.orderNumber || report.id || '—', true, LIGHT_GREEN, TEXT_COLOR],
-    ['Date:', true, DARK_GREEN, '#ffffff'],
-    [formatDate(report.updatedAt), false, LIGHT_GREEN, TEXT_COLOR],
+  const metadataLabelWidth = 67.5
+  const metadataValueWidth = 251.9
+  const metadataRows = [
+    ['Report ID:', report.reportNumber || '—', true],
+    ['Date:', formatDate(report.updatedAt), false],
   ]
-  let metadataCellX = metadataX
 
-  metadata.forEach(([value, bold, fill, color], index) => {
-    fillRect(document, metadataCellX, metadataY, metadataWidths[index], 12, fill)
+  metadataRows.forEach(([label, value, bold], rowIndex) => {
+    const rowY = metadataY + rowIndex * 12
+    fillRect(document, metadataX, rowY, metadataLabelWidth, 12, DARK_GREEN)
+    fillRect(document, metadataX + metadataLabelWidth, rowY, metadataValueWidth, 12, LIGHT_GREEN)
+    drawCellText(
+      document,
+      label,
+      metadataX + 3,
+      rowY,
+      metadataLabelWidth - 6,
+      12,
+      6.6,
+      '#ffffff',
+      true,
+      'center',
+    )
     drawCellText(
       document,
       value,
-      metadataCellX + 3,
-      metadataY,
-      metadataWidths[index] - 6,
+      metadataX + metadataLabelWidth + 3,
+      rowY,
+      metadataValueWidth - 6,
       12,
-      6.6,
-      color,
-      bold,
+      rowIndex === 0 ? 7.2 : 6.6,
+      TEXT_COLOR,
+      Boolean(bold),
       'center',
+      false,
     )
-    metadataCellX += metadataWidths[index]
   })
   state.y = 172
 }
@@ -732,13 +744,14 @@ function drawCellText(
   color,
   bold,
   align = 'left',
+  ellipsis = true,
 ) {
   const textHeight = measureText(document, text, width, fontSize, bold)
   drawText(document, text, x, y + Math.max(4, (height - textHeight) / 2), fontSize, color, bold, {
     width,
     height: Math.max(fontSize + 2, height - 6),
     align,
-    ellipsis: true,
+    ellipsis,
   })
 }
 

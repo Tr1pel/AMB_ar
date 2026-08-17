@@ -201,6 +201,7 @@ export async function createReportDraft(
   )
   const draft: ReportDraft = {
     id: draftId,
+    reportNumber: existingDraft?.reportNumber ?? createLocalReportNumber(draftId),
     status: options.status ?? 'draft',
     templateId: selectedTemplate?.id ?? existingDraft?.templateId,
     templateSnapshot: selectedTemplate
@@ -240,6 +241,10 @@ export async function createReportDraft(
   )
 
   return deserializeDetails(serverDetails)
+}
+
+function createLocalReportNumber(draftId: string): string {
+  return `LOCAL-${draftId.replace(/^report_/, '')}`
 }
 
 export async function listReportDrafts(adminAccountId?: string): Promise<ReportDraft[]> {

@@ -7,26 +7,23 @@ export interface SaveAccountInput {
   fullName: string
   role: AccountRole
   isActive?: boolean
+  password?: string
 }
 
 export class AccountRepository {
-  async ensureSeeds(): Promise<void> {
-    await apiPost('/api/bootstrap')
+  async signIn(loginNumber: string, password: string): Promise<Account> {
+    return apiPost<Account>('/api/auth/login', { loginNumber: loginNumber.trim(), password })
   }
 
-  async findByLoginNumber(loginNumber: string): Promise<Account | null> {
-    const normalizedLoginNumber = loginNumber.trim()
+  async signInDemo(role: AccountRole): Promise<Account> {
+    return apiPost<Account>('/api/auth/demo', { role })
+  }
 
-    if (!normalizedLoginNumber) {
-      return null
-    }
-
+  async getCurrent(): Promise<Account | null> {
     try {
-      return await apiGet<Account>(
-        `/api/accounts/login?loginNumber=${encodeURIComponent(normalizedLoginNumber)}`,
-      )
+      return await apiGet<Account>('/api/auth/session')
     } catch (error) {
-      if (isNotFound(error)) {
+      if (isUnauthenticated(error)) {
         return null
       }
 
@@ -34,34 +31,21 @@ export class AccountRepository {
     }
   }
 
-  async getAvailable(accountId: string): Promise<Account | null> {
-    try {
-      return await apiGet<Account>(`/api/accounts/${encodeURIComponent(accountId)}`)
-    } catch (error) {
-      if (isNotFound(error)) {
-        return null
-      }
-
-      throw error
-    }
-  }
-
-  async getDemo(role: AccountRole): Promise<Account | null> {
-    await this.ensureSeeds()
-
-    try {
-      return await apiGet<Account>(`/api/accounts/demo?role=${encodeURIComponent(role)}`)
-    } catch (error) {
-      if (isNotFound(error)) {
-        return null
-      }
-
-      throw error
-    }
+  async signOut(): Promise<void> {
+    await apiPost('/api/auth/logout')
   }
 
   async list(adminAccountId: string): Promise<Account[]> {
     return apiGet<Account[]>('/api/accounts', adminAccountId)
+  }
+
+  async generateLoginNumber(role: AccountRole, adminAccountId: string): Promise<string> {
+    const result = await apiPost<{ loginNumber: string }>(
+      '/api/accounts/generate-login-number',
+      { role },
+      adminAccountId,
+    )
+    return result.loginNumber
   }
 
   async save(input: SaveAccountInput, adminAccountId: string): Promise<Account> {
@@ -75,24 +59,31 @@ export class AccountRepository {
 
 export const accountRepository = new AccountRepository()
 
-export async function ensureSeedAccounts(): Promise<void> {
-  await accountRepository.ensureSeeds()
+export async function signInAccount(loginNumber: string, password: string): Promise<Account> {
+  return accountRepository.signIn(loginNumber, password)
 }
 
-export async function findAccountByLoginNumber(loginNumber: string): Promise<Account | null> {
-  return accountRepository.findByLoginNumber(loginNumber)
+export async function signInDemoAccount(role: AccountRole): Promise<Account> {
+  return accountRepository.signInDemo(role)
 }
 
-export async function getAccount(accountId: string): Promise<Account | null> {
-  return accountRepository.getAvailable(accountId)
+export async function getCurrentAccount(): Promise<Account | null> {
+  return accountRepository.getCurrent()
 }
 
-export async function getDemoAccount(role: AccountRole): Promise<Account | null> {
-  return accountRepository.getDemo(role)
+export async function signOutAccount(): Promise<void> {
+  await accountRepository.signOut()
 }
 
 export async function listAccounts(adminAccountId: string): Promise<Account[]> {
   return accountRepository.list(adminAccountId)
+}
+
+export async function generateAccountLoginNumber(
+  role: AccountRole,
+  adminAccountId: string,
+): Promise<string> {
+  return accountRepository.generateLoginNumber(role, adminAccountId)
 }
 
 export async function saveAccount(
@@ -109,6 +100,6 @@ export async function softDeleteAccount(
   await accountRepository.softDelete(accountId, adminAccountId)
 }
 
-function isNotFound(error: unknown): boolean {
-  return error instanceof Error && /не найден|404/i.test(error.message)
+function isUnauthenticated(error: unknown): boolean {
+  return error instanceof Error && /требуется вход|401/i.test(error.message)
 }

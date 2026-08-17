@@ -126,8 +126,8 @@ function isMobileNavItemActive(item: NavigationItem): boolean {
   return isNavItemActive(item.to)
 }
 
-function signOut(): void {
-  authStore.signOut()
+async function signOut(): Promise<void> {
+  await authStore.signOut()
 }
 </script>
 

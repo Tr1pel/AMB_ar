@@ -10,7 +10,7 @@ const COLLECTIONS = [
   'generatedDocuments',
 ]
 
-export function createServerDatabase(databasePath) {
+export function createServerDatabase(databasePath, options = {}) {
   const database = new DatabaseSync(databasePath)
 
   database.exec(`
@@ -21,6 +21,7 @@ export function createServerDatabase(databasePath) {
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       login_number TEXT NOT NULL,
+      password_hash TEXT,
       full_name TEXT NOT NULL,
       role TEXT NOT NULL CHECK (role IN ('admin', 'worker')),
       is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)),
@@ -39,6 +40,19 @@ export function createServerDatabase(databasePath) {
     CREATE INDEX IF NOT EXISTS accounts_role_active_idx
       ON accounts (role, is_active)
       WHERE deleted_at IS NULL;
+
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      token_hash TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS auth_sessions_account_idx
+      ON auth_sessions (account_id);
+    CREATE INDEX IF NOT EXISTS auth_sessions_expires_idx
+      ON auth_sessions (expires_at);
 
     CREATE TABLE IF NOT EXISTS report_template_options (
       id TEXT PRIMARY KEY,
@@ -89,6 +103,7 @@ export function createServerDatabase(databasePath) {
 
     CREATE TABLE IF NOT EXISTS report_drafts (
       id TEXT PRIMARY KEY,
+      report_number TEXT,
       status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'exported', 'archived')),
       archived_from_status TEXT CHECK (
         archived_from_status IS NULL OR archived_from_status IN ('draft', 'ready', 'exported')
@@ -131,6 +146,13 @@ export function createServerDatabase(databasePath) {
     CREATE INDEX IF NOT EXISTS report_drafts_product_idx
       ON report_drafts (product_id)
       WHERE deleted_at IS NULL;
+
+    CREATE TABLE IF NOT EXISTS report_number_counters (
+      warehouse_code TEXT NOT NULL,
+      report_date TEXT NOT NULL,
+      last_sequence INTEGER NOT NULL CHECK (last_sequence > 0),
+      PRIMARY KEY (warehouse_code, report_date)
+    ) STRICT;
 
     CREATE TABLE IF NOT EXISTS product_photos (
       id TEXT PRIMARY KEY,
@@ -177,14 +199,17 @@ export function createServerDatabase(databasePath) {
       WHERE deleted_at IS NULL;
   `)
 
+  migrateAccountPassword(database)
   migrateProductPhotoTemplateField(database)
   migrateDocumentTemplateSchemas(database)
   migrateReportArchiveStatus(database)
+  migrateReportNumber(database)
+  backfillReportNumbers(database, options.warehouseCode, options.reportNumberTimeZone)
 
   const statements = prepareStatements(database)
 
   migrateLegacyEntities(database, statements)
-  database.exec('PRAGMA user_version = 5')
+  database.exec('PRAGMA user_version = 7')
 
   return {
     path: databasePath,
@@ -196,8 +221,121 @@ export function createServerDatabase(databasePath) {
       purgeExpiredArchivedReports(database, nowTimestamp),
     permanentlyDeleteArchivedReport: (reportId) =>
       permanentlyDeleteArchivedReport(database, reportId),
+    allocateReportSequence: (warehouseCode, reportDate) =>
+      allocateReportSequence(database, warehouseCode, reportDate),
+    createAuthSession: (tokenHash, accountId, createdAt, expiresAt) => {
+      database
+        .prepare(
+          `INSERT INTO auth_sessions (token_hash, account_id, created_at, expires_at)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(tokenHash, accountId, createdAt, expiresAt)
+    },
+    findAuthSession: (tokenHash, now) =>
+      database
+        .prepare(
+          `SELECT account_id FROM auth_sessions
+           WHERE token_hash = ? AND expires_at > ?`,
+        )
+        .get(tokenHash, now),
+    deleteAuthSession: (tokenHash) => {
+      database.prepare('DELETE FROM auth_sessions WHERE token_hash = ?').run(tokenHash)
+    },
+    deleteAccountAuthSessions: (accountId) => {
+      database.prepare('DELETE FROM auth_sessions WHERE account_id = ?').run(accountId)
+    },
+    deleteAccountAuthSessionsExcept: (accountId, tokenHash) => {
+      database
+        .prepare('DELETE FROM auth_sessions WHERE account_id = ? AND token_hash <> ?')
+        .run(accountId, tokenHash)
+    },
+    purgeExpiredAuthSessions: (now) => {
+      database.prepare('DELETE FROM auth_sessions WHERE expires_at <= ?').run(now)
+    },
     close: () => database.close(),
   }
+}
+
+function migrateAccountPassword(database) {
+  const columns = database.prepare('PRAGMA table_info(accounts)').all()
+
+  if (!columns.some((column) => column.name === 'password_hash')) {
+    database.exec('ALTER TABLE accounts ADD COLUMN password_hash TEXT')
+  }
+}
+
+function allocateReportSequence(database, warehouseCode, reportDate) {
+  const prefix = `AMB-QC-${warehouseCode}-${reportDate}-`
+
+  database.exec('BEGIN IMMEDIATE')
+
+  try {
+    const storedCounter = database
+      .prepare(
+        `SELECT last_sequence FROM report_number_counters
+         WHERE warehouse_code = ? AND report_date = ?`,
+      )
+      .get(warehouseCode, reportDate)?.last_sequence
+    const highestStoredReport = database
+      .prepare(
+        `SELECT MAX(CAST(SUBSTR(report_number, ?) AS INTEGER)) AS last_sequence
+         FROM report_drafts
+         WHERE report_number LIKE ?`,
+      )
+      .get(prefix.length + 1, `${prefix}%`)?.last_sequence
+    const nextSequence = Math.max(Number(storedCounter ?? 0), Number(highestStoredReport ?? 0)) + 1
+
+    database
+      .prepare(
+        `INSERT INTO report_number_counters (warehouse_code, report_date, last_sequence)
+         VALUES (?, ?, ?)
+         ON CONFLICT (warehouse_code, report_date) DO UPDATE SET
+           last_sequence = excluded.last_sequence`,
+      )
+      .run(warehouseCode, reportDate, nextSequence)
+    database.exec('COMMIT')
+    return nextSequence
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+function backfillReportNumbers(database, warehouseCode, timeZone) {
+  if (!warehouseCode || !timeZone) {
+    return
+  }
+
+  const reports = database
+    .prepare(
+      `SELECT id, created_at FROM report_drafts
+       WHERE report_number IS NULL
+       ORDER BY created_at, id`,
+    )
+    .all()
+  const updateReportNumber = database.prepare(
+    'UPDATE report_drafts SET report_number = ? WHERE id = ? AND report_number IS NULL',
+  )
+
+  for (const report of reports) {
+    const reportDate = formatDateInTimeZone(report.created_at, timeZone)
+    const sequence = allocateReportSequence(database, warehouseCode, reportDate)
+    const reportNumber = `AMB-QC-${warehouseCode}-${reportDate}-${String(sequence).padStart(4, '0')}`
+
+    updateReportNumber.run(reportNumber, report.id)
+  }
+}
+
+function formatDateInTimeZone(timestamp, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(timestamp))
+  const valueByType = new Map(parts.map((part) => [part.type, part.value]))
+
+  return `${valueByType.get('year')}${valueByType.get('month')}${valueByType.get('day')}`
 }
 
 function migrateDocumentTemplateSchemas(database) {
@@ -234,17 +372,32 @@ function migrateReportArchiveStatus(database) {
   }
 }
 
+function migrateReportNumber(database) {
+  const columns = database.prepare('PRAGMA table_info(report_drafts)').all()
+
+  if (!columns.some((column) => column.name === 'report_number')) {
+    database.exec('ALTER TABLE report_drafts ADD COLUMN report_number TEXT')
+  }
+
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS report_drafts_report_number_idx
+      ON report_drafts (report_number)
+      WHERE report_number IS NOT NULL
+  `)
+}
+
 function prepareStatements(database) {
   return {
     accounts: {
       select: database.prepare('SELECT * FROM accounts'),
       upsert: database.prepare(`
         INSERT INTO accounts (
-          id, login_number, full_name, role, is_active, created_at, updated_at, deleted_at,
-          last_modified, local_version, server_timestamp, server_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, login_number, password_hash, full_name, role, is_active, created_at, updated_at,
+          deleted_at, last_modified, local_version, server_timestamp, server_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
           login_number = excluded.login_number,
+          password_hash = excluded.password_hash,
           full_name = excluded.full_name,
           role = excluded.role,
           is_active = excluded.is_active,
@@ -316,13 +469,14 @@ function prepareStatements(database) {
       select: database.prepare('SELECT * FROM report_drafts'),
       upsert: database.prepare(`
         INSERT INTO report_drafts (
-          id, status, archived_from_status, template_id, template_snapshot_json, worker_account_id, product_id,
+          id, report_number, status, archived_from_status, template_id, template_snapshot_json, worker_account_id, product_id,
           product_name, inspector_name, main_info_json, temperature_info_json,
           inspection_results_json, descriptions_json, expert_conclusion,
           custom_field_values_json, sampling_json, signatures_json, photo_ids_json, created_at,
           updated_at, deleted_at, last_modified, local_version, server_timestamp, server_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
+          report_number = excluded.report_number,
           status = excluded.status,
           archived_from_status = excluded.archived_from_status,
           template_id = excluded.template_id,
@@ -629,6 +783,7 @@ function accountToParameters(entity) {
   return [
     entity.id,
     entity.loginNumber,
+    nullable(entity.passwordHash),
     entity.fullName,
     entity.role,
     entity.isActive ? 1 : 0,
@@ -677,6 +832,7 @@ function documentTemplateToParameters(entity) {
 function reportDraftToParameters(entity) {
   return [
     entity.id,
+    nullable(entity.reportNumber),
     entity.status,
     nullable(entity.archivedFromStatus),
     nullable(entity.templateId),
@@ -743,6 +899,7 @@ function accountFromRow(row) {
   return withMetadata(row, {
     id: row.id,
     loginNumber: row.login_number,
+    passwordHash: row.password_hash ?? undefined,
     fullName: row.full_name,
     role: row.role,
     isActive: Boolean(row.is_active),
@@ -828,6 +985,7 @@ function createLegacyRenderSpec(documentTitle, sections) {
 function reportDraftFromRow(row) {
   return withMetadata(row, {
     id: row.id,
+    ...(row.report_number === null ? {} : { reportNumber: row.report_number }),
     status: row.status,
     ...(row.archived_from_status === null
       ? {}

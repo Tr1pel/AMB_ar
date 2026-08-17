@@ -21,6 +21,7 @@ const filteredReports = computed(() => {
 
   return reportDraftStore.reports.filter((report) => {
     const searchValue = [
+      report.reportNumber,
       report.productName,
       report.inspectorName,
       report.mainInfo?.orderNumber,
@@ -53,6 +54,12 @@ function formatReportTime(timestamp: number): string {
 
 function getReportOrder(report: ReportDraft): string {
   return report.mainInfo?.orderNumber || 'Не указан'
+}
+
+function getReportNumber(report: ReportDraft): string {
+  return report.reportNumber?.startsWith('AMB-QC-')
+    ? report.reportNumber
+    : 'Ожидает синхронизации'
 }
 
 function getReportPhotoCount(report: ReportDraft): number {
@@ -196,6 +203,10 @@ function downloadBlob(blob: Blob, fileName: string): void {
           </div>
 
           <dl class="report-card__details">
+            <div>
+              <dt>Номер отчета</dt>
+              <dd>{{ getReportNumber(report) }}</dd>
+            </div>
             <div>
               <dt>Номер заказа</dt>
               <dd>{{ getReportOrder(report) }}</dd>

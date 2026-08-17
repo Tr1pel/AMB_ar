@@ -1,9 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { dirname, extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import argon2 from 'argon2'
 
 import { createServerDatabase } from './database.mjs'
 import { generateTemplateReportPdf } from './branded-report-pdf.mjs'
@@ -16,6 +18,12 @@ const DB_PATH = process.env.AMB_AR_DATABASE_PATH
   : join(SERVER_DIR, 'amb-ar.sqlite')
 const PORT = Number(process.env.AMB_AR_API_PORT ?? 3001)
 const HOST = process.env.AMB_AR_HOST?.trim() || '127.0.0.1'
+const WAREHOUSE_CODE = normalizeWarehouseCode(process.env.AMB_AR_WAREHOUSE_CODE ?? 'MSC01')
+const REPORT_NUMBER_TIME_ZONE = process.env.AMB_AR_REPORT_TIME_ZONE?.trim() || 'Europe/Moscow'
+const SESSION_COOKIE_NAME = 'amb_ar_session'
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const INITIAL_ACCOUNT_PASSWORD = process.env.AMB_AR_INITIAL_PASSWORD?.trim() || 'AmbAr-2026!'
+const ALLOWED_ORIGIN = process.env.AMB_AR_ALLOWED_ORIGIN?.trim() || 'http://127.0.0.1:5173'
 const MAX_BODY_SIZE_BYTES = 100 * 1024 * 1024
 const MAX_PHOTO_SIZE_BYTES = 15 * 1024 * 1024
 const MAX_DOCUMENT_SIZE_BYTES = 50 * 1024 * 1024
@@ -34,13 +42,23 @@ const PHOTO_CATEGORIES = new Set([
   'notStandard',
 ])
 
-const serverDatabase = createServerDatabase(DB_PATH)
+const serverDatabase = createServerDatabase(DB_PATH, {
+  warehouseCode: WAREHOUSE_CODE,
+  reportNumberTimeZone: REPORT_NUMBER_TIME_ZONE,
+})
 const {
   readDb,
   writeDb,
   writeDbReplacingGeneratedDocuments,
   purgeExpiredArchivedReports,
   permanentlyDeleteArchivedReport,
+  allocateReportSequence,
+  createAuthSession,
+  findAuthSession,
+  deleteAuthSession,
+  deleteAccountAuthSessions,
+  deleteAccountAuthSessionsExcept,
+  purgeExpiredAuthSessions,
 } = serverDatabase
 let mutationTail = Promise.resolve()
 
@@ -55,7 +73,7 @@ const archivePurgeTimer = setInterval(() => {
 archivePurgeTimer.unref()
 
 export const server = createServer(async (request, response) => {
-  setCorsHeaders(response)
+  setCorsHeaders(request, response)
 
   if (request.method === 'OPTIONS') {
     response.writeHead(204)
@@ -144,29 +162,86 @@ async function handleApiRequest(request, response, requestUrl, db) {
   const { pathname } = requestUrl
   const method = request.method ?? 'GET'
 
-  if (pathname === '/api/accounts/login' && method === 'GET') {
-    const loginNumber = requestUrl.searchParams.get('loginNumber')?.trim()
+  if (pathname === '/api/auth/login' && method === 'POST') {
+    const input = await readJsonBody(request)
+    const loginNumber = String(input.loginNumber ?? '').trim()
+    const password = String(input.password ?? '')
     const account = db.accounts.find(
       (item) => item.loginNumber === loginNumber && item.isActive && isVisibleEntity(item),
     )
 
-    sendJson(response, account ?? null, account ? 200 : 404)
+    if (!account?.passwordHash || !(await argon2.verify(account.passwordHash, password))) {
+      throw createHttpError(401, 'Неверный номер сотрудника или пароль')
+    }
+
+    startAccountSession(response, account.id)
+    sendJson(response, toPublicAccount(account))
     return true
   }
 
-  if (pathname === '/api/accounts/demo' && method === 'GET') {
-    const role = requestUrl.searchParams.get('role')
+  if (pathname === '/api/auth/demo' && method === 'POST') {
+    const input = await readJsonBody(request)
+    const role = input.role === 'admin' ? 'admin' : 'worker'
     const account = db.accounts.find(
       (item) => item.role === role && item.isActive && isVisibleEntity(item),
     )
 
-    sendJson(response, account ?? null, account ? 200 : 404)
+    if (!account) {
+      throw createHttpError(404, 'Демо-аккаунт не найден')
+    }
+
+    startAccountSession(response, account.id)
+    sendJson(response, toPublicAccount(account))
+    return true
+  }
+
+  if (pathname === '/api/auth/session' && method === 'GET') {
+    sendJson(response, toPublicAccount(requireAccount(request, db)))
+    return true
+  }
+
+  if (pathname === '/api/auth/logout' && method === 'POST') {
+    const token = getSessionToken(request)
+
+    if (token) {
+      deleteAuthSession(hashSessionToken(token))
+    }
+
+    clearSessionCookie(response)
+    sendJson(response, { ok: true })
     return true
   }
 
   if (pathname === '/api/accounts' && method === 'GET') {
     requireAdmin(request, db)
-    sendJson(response, db.accounts.filter(isVisibleEntity))
+    sendJson(response, db.accounts.filter(isVisibleEntity).map(toPublicAccount))
+    return true
+  }
+
+  if (pathname === '/api/accounts/generate-login-number' && method === 'POST') {
+    requireAdmin(request, db)
+    const input = await readJsonBody(request)
+    const role = input.role === 'admin' ? 'admin' : input.role === 'worker' ? 'worker' : null
+
+    if (!role) {
+      throw createHttpError(400, 'Выберите роль для генерации номера')
+    }
+
+    const prefix = role === 'admin' ? '1' : '2'
+    const loginNumberPattern = new RegExp(`^${prefix}\\d{3}$`)
+    const numericLoginNumbers = db.accounts
+      .filter(isVisibleEntity)
+      .map((account) => account.loginNumber)
+      .filter((loginNumber) => loginNumberPattern.test(loginNumber))
+      .map((loginNumber) => Number(loginNumber))
+      .filter(Number.isSafeInteger)
+    const nextNumber = Math.max(Number(`${prefix}000`), ...numericLoginNumbers) + 1
+
+    if (nextNumber > Number(`${prefix}999`)) {
+      throw createHttpError(409, 'Свободные номера этой роли закончились')
+    }
+
+    sendJson(response, { loginNumber: String(nextNumber) })
     return true
   }
 
@@ -175,6 +250,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const input = await readJsonBody(request)
     const loginNumber = String(input.loginNumber ?? '').trim()
     const fullName = String(input.fullName ?? '').trim()
+    const password = String(input.password ?? '')
 
     if (!loginNumber || !fullName) {
       throw createHttpError(400, 'Укажите номер аккаунта и ФИО')
@@ -182,6 +258,19 @@ async function handleApiRequest(request, response, requestUrl, db) {
 
     ensureUniqueLoginNumber(db, loginNumber, input.id)
     const existing = input.id ? db.accounts.find((item) => item.id === input.id) : undefined
+
+    if (input.id && !existing) {
+      throw createHttpError(404, 'Аккаунт не найден')
+    }
+
+    if (!existing && !password) {
+      throw createHttpError(400, 'Укажите или сгенерируйте пароль')
+    }
+
+    if (password) {
+      validatePassword(password)
+    }
+
     const now = Date.now()
     const role = input.role === 'admin' ? 'admin' : 'worker'
     const isActive = Boolean(input.isActive ?? existing?.isActive ?? true)
@@ -192,6 +281,9 @@ async function handleApiRequest(request, response, requestUrl, db) {
       ...existing,
       id: existing?.id ?? createEntityId('account'),
       loginNumber,
+      passwordHash: password
+        ? await argon2.hash(password, { type: argon2.argon2id })
+        : existing?.passwordHash,
       fullName,
       role,
       isActive,
@@ -202,17 +294,28 @@ async function handleApiRequest(request, response, requestUrl, db) {
 
     db.accounts = upsert(db.accounts, account)
     writeDb(db)
-    sendJson(response, account, existing ? 200 : 201)
+
+    if (password && existing) {
+      deleteAccountAuthSessionsExcept(account.id, hashSessionToken(getSessionToken(request)))
+    }
+
+    sendJson(response, toPublicAccount(account), existing ? 200 : 201)
     return true
   }
 
   const accountId = matchId(pathname, '/api/accounts/')
 
   if (accountId && method === 'GET') {
+    const currentAccount = requireAccount(request, db)
     const account = db.accounts.find(
       (item) => item.id === accountId && item.isActive && isVisibleEntity(item),
     )
-    sendJson(response, account ?? null, account ? 200 : 404)
+
+    if (account && currentAccount.id !== account.id && currentAccount.role !== 'admin') {
+      throw createHttpError(403, 'Нет доступа к этому аккаунту')
+    }
+
+    sendJson(response, account ? toPublicAccount(account) : null, account ? 200 : 404)
     return true
   }
 
@@ -233,6 +336,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
         stampEntity({ ...account, isActive: false, updatedAt: deletedAt, _deletedAt: deletedAt }),
       )
       writeDb(db)
+      deleteAccountAuthSessions(accountId)
     }
 
     sendJson(response, { ok: true })
@@ -320,10 +424,10 @@ async function handleApiRequest(request, response, requestUrl, db) {
       throw createHttpError(400, 'Некорректный системный макет')
     }
 
+    // Keep a soft-deleted seed deleted. The client calls this endpoint during
+    // every template load, so checking only visible rows would resurrect it.
     if (
-      !db.documentTemplates.some(
-        (template) => template.id === input.id && isVisibleEntity(template),
-      )
+      !db.documentTemplates.some((template) => template.id === input.id)
     ) {
       const inputSchema = validateInputSchema(
         input.inputSchema ?? { version: 1, steps: input.sections },
@@ -864,8 +968,11 @@ async function handleApiRequest(request, response, requestUrl, db) {
     mainInfo.productName = productName
 
     const now = Date.now()
+    const createdAt = existingDraft?.createdAt ?? now
     const draft = stampEntity({
       id: reportId,
+      reportNumber:
+        existingDraft?.reportNumber ?? createReportNumber(createdAt),
       status,
       ...(template
         ? { templateId: template.id, templateSnapshot: snapshotTemplate(template) }
@@ -889,7 +996,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
       sampling: normalizeJsonObject(incomingDraft.sampling, 'Параметры выборки'),
       signatures: normalizeJsonObject(incomingDraft.signatures, 'Подписи'),
       photoIds: savedPhotos.map((photo) => photo.id),
-      createdAt: existingDraft?.createdAt ?? now,
+      createdAt,
       updatedAt: now,
       _deletedAt: undefined,
     })
@@ -1515,6 +1622,20 @@ async function ensureSeeds() {
     changed = true
   }
 
+  for (let index = 0; index < db.accounts.length; index += 1) {
+    const account = db.accounts[index]
+
+    if (!account.passwordHash) {
+      db.accounts[index] = stampEntity({
+        ...account,
+        passwordHash: await argon2.hash(INITIAL_ACCOUNT_PASSWORD, {
+          type: argon2.argon2id,
+        }),
+      })
+      changed = true
+    }
+  }
+
   if (!db.reportTemplateOptions.length) {
     db.reportTemplateOptions = createSeedTemplateOptions()
     changed = true
@@ -1575,13 +1696,15 @@ function requireAdmin(request, db) {
 }
 
 function requireAccount(request, db) {
-  const accountId = request.headers['x-account-id']
+  const token = getSessionToken(request)
+  const session = token ? findAuthSession(hashSessionToken(token), Date.now()) : undefined
+  const accountId = session?.account_id
   const account = db.accounts.find(
     (item) => item.id === accountId && item.isActive && isVisibleEntity(item),
   )
 
   if (!account) {
-    throw createHttpError(403, 'Требуется активная учетная запись')
+    throw createHttpError(401, 'Требуется вход в учетную запись')
   }
 
   return account
@@ -1693,7 +1816,7 @@ function getReportResourceId(pathname) {
 }
 
 function createGeneratedPdfFileName(report, generatedAt) {
-  const rawBaseName = String(report.mainInfo?.orderNumber || report.id || 'quality-report').trim()
+  const rawBaseName = String(report.reportNumber || 'quality-report').trim()
   const baseName = Array.from(rawBaseName, (character) =>
     character.charCodeAt(0) <= 31 ? '_' : character,
   )
@@ -1744,10 +1867,74 @@ function sendJson(response, data, status = 200) {
   response.end(JSON.stringify(data))
 }
 
-function setCorsHeaders(response) {
-  response.setHeader('Access-Control-Allow-Origin', '*')
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Account-Id')
+function setCorsHeaders(request, response) {
+  if (request.headers.origin === ALLOWED_ORIGIN) {
+    response.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN)
+    response.setHeader('Access-Control-Allow-Credentials', 'true')
+    response.setHeader('Vary', 'Origin')
+  }
+
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type')
   response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,HEAD,OPTIONS')
+}
+
+function getSessionToken(request) {
+  const cookieHeader = String(request.headers.cookie ?? '')
+
+  for (const part of cookieHeader.split(';')) {
+    const separatorIndex = part.indexOf('=')
+
+    if (separatorIndex < 0) {
+      continue
+    }
+
+    const name = part.slice(0, separatorIndex).trim()
+
+    if (name === SESSION_COOKIE_NAME) {
+      return decodeURIComponent(part.slice(separatorIndex + 1).trim())
+    }
+  }
+
+  return undefined
+}
+
+function hashSessionToken(token) {
+  return createHash('sha256').update(token).digest('hex')
+}
+
+function setSessionCookie(response, token) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : ''
+  response.setHeader(
+    'Set-Cookie',
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure}`,
+  )
+}
+
+function startAccountSession(response, accountId) {
+  const token = randomBytes(32).toString('base64url')
+  const now = Date.now()
+  purgeExpiredAuthSessions(now)
+  createAuthSession(hashSessionToken(token), accountId, now, now + SESSION_TTL_MS)
+  setSessionCookie(response, token)
+}
+
+function clearSessionCookie(response) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : ''
+  response.setHeader(
+    'Set-Cookie',
+    `${SESSION_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0${secure}`,
+  )
+}
+
+function toPublicAccount(account) {
+  const { passwordHash: _passwordHash, ...publicAccount } = account
+  return publicAccount
+}
+
+function validatePassword(password) {
+  if (password.length < 8 || password.length > 128) {
+    throw createHttpError(400, 'Пароль должен содержать от 8 до 128 символов')
+  }
 }
 
 function createHttpError(statusCode, message) {
@@ -1758,6 +1945,36 @@ function createHttpError(statusCode, message) {
 
 function createEntityId(prefix) {
   return `${prefix}_${randomUUID()}`
+}
+
+function createReportNumber(createdAt) {
+  const date = formatReportNumberDate(createdAt)
+  const prefix = `AMB-QC-${WAREHOUSE_CODE}-${date}-`
+  const sequence = allocateReportSequence(WAREHOUSE_CODE, date)
+
+  return `${prefix}${String(sequence).padStart(4, '0')}`
+}
+
+function formatReportNumberDate(timestamp) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: REPORT_NUMBER_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(timestamp))
+  const valueByType = new Map(parts.map((part) => [part.type, part.value]))
+
+  return `${valueByType.get('year')}${valueByType.get('month')}${valueByType.get('day')}`
+}
+
+function normalizeWarehouseCode(value) {
+  const code = String(value).trim().toUpperCase()
+
+  if (!/^[A-Z0-9]{2,12}$/.test(code)) {
+    throw new Error('AMB_AR_WAREHOUSE_CODE должен содержать 2–12 латинских букв или цифр')
+  }
+
+  return code
 }
 
 function createSeedAccounts() {

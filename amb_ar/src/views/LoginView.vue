@@ -8,10 +8,11 @@ import type { AccountRole } from '@/types/report'
 const authStore = useAuthStore()
 const router = useRouter()
 const loginNumber = ref('')
+const password = ref('')
 const selectedDemoRole = ref<AccountRole | null>(null)
 
 async function handleSignIn(): Promise<void> {
-  const account = await authStore.signIn(loginNumber.value)
+  const account = await authStore.signIn(loginNumber.value, password.value)
 
   if (account) {
     await goToWorkspace(account.role)
@@ -20,9 +21,7 @@ async function handleSignIn(): Promise<void> {
 
 async function handleDemoSignIn(role: AccountRole): Promise<void> {
   selectedDemoRole.value = role
-
   const account = await authStore.signInAsRole(role)
-
   selectedDemoRole.value = null
 
   if (account) {
@@ -45,7 +44,7 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
         <h1>Вход</h1>
       </header>
 
-      <div class="role-actions" aria-label="Выбор роли">
+      <div class="role-actions" aria-label="Демо-вход">
         <button
           class="role-button role-button--primary"
           type="button"
@@ -67,7 +66,7 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
         </button>
       </div>
 
-      <div class="login-divider"><span>или по номеру сотрудника</span></div>
+      <div class="login-divider"><span>или по номеру и паролю</span></div>
 
       <form class="login-form" @submit.prevent="handleSignIn">
         <label class="field-label" for="loginNumber">
@@ -77,12 +76,24 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
             v-model="loginNumber"
             class="field-control"
             inputmode="numeric"
-            autocomplete="one-time-code"
+            autocomplete="username"
             placeholder="Например, 2001"
+            required
+          />
+        </label>
+        <label class="field-label" for="password">
+          Пароль
+          <input
+            id="password"
+            v-model="password"
+            class="field-control"
+            type="password"
+            autocomplete="current-password"
+            required
           />
         </label>
         <button class="primary-button" type="submit" :disabled="authStore.isLoading">
-          {{ authStore.isLoading && !selectedDemoRole ? 'Проверяем...' : 'Продолжить' }}
+          {{ authStore.isLoading && !selectedDemoRole ? 'Проверяем...' : 'Войти' }}
         </button>
       </form>
 
@@ -321,7 +332,7 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
 }
 
 .login-form {
-  grid-template-columns: minmax(0, 1fr) 140px;
+  grid-template-columns: 1fr;
   align-items: end;
 }
 
@@ -427,7 +438,7 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
 }
 
 .login-form {
-  grid-template-columns: minmax(0, 1fr) 132px;
+  grid-template-columns: 1fr;
 }
 
 @media (max-width: 520px) {

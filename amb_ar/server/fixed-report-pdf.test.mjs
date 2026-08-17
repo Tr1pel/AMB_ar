@@ -9,6 +9,7 @@ test('the fixed report style keeps the logo on page one and renders editor table
     inspectorName: 'Иванов Иван Иванович',
     productName: 'Тестовый товар',
     updatedAt: Date.UTC(2026, 7, 7),
+    reportNumber: 'AMB-QC-MSC01-20260817-0001',
     mainInfo: { orderNumber: 'TEST-001' },
     customFieldValues: {
       'custom.table': {

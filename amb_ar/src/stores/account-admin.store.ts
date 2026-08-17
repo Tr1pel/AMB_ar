@@ -36,12 +36,12 @@ export const useAccountAdminStore = defineStore('accountAdmin', () => {
     }
   }
 
-  async function save(input: SaveAccountInput): Promise<void> {
+  async function save(input: SaveAccountInput): Promise<boolean> {
     const authStore = useAuthStore()
 
     if (!authStore.currentAccount?.id) {
       errorMessage.value = 'Нужно войти под администратором'
-      return
+      return false
     }
 
     isSaving.value = true
@@ -50,8 +50,10 @@ export const useAccountAdminStore = defineStore('accountAdmin', () => {
     try {
       await saveAccount(input, authStore.currentAccount.id)
       accounts.value = await listAccounts(authStore.currentAccount.id)
+      return true
     } catch (error) {
       errorMessage.value = getErrorMessage(error)
+      return false
     } finally {
       isSaving.value = false
     }

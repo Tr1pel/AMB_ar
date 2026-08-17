@@ -41,6 +41,7 @@ const filteredReports = computed(() => {
 
   return displayedReports.value.filter((report) => {
     const searchValue = [
+      report.reportNumber,
       report.productName,
       report.inspectorName,
       report.mainInfo?.orderNumber,
@@ -239,6 +240,12 @@ function getReportOrder(report: ReportDraft): string {
   return report.mainInfo?.orderNumber ? `Заказ ${report.mainInfo.orderNumber}` : 'Без номера'
 }
 
+function getReportNumber(report: ReportDraft): string {
+  return report.reportNumber?.startsWith('AMB-QC-')
+    ? report.reportNumber
+    : 'Ожидает синхронизации'
+}
+
 function getReportPhotoCount(report: ReportDraft): number {
   return report.photoIds?.length ?? 0
 }
@@ -433,6 +440,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
             </p>
 
             <div class="report-card__chips">
+              <span>{{ getReportNumber(report) }}</span>
               <span>{{ getReportOrder(report) }}</span>
               <span>{{ getReportPlace(report) }}</span>
               <span>{{ getReportPhotoCount(report) }} фото</span>

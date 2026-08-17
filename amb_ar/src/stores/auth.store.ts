@@ -2,14 +2,12 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
-  ensureSeedAccounts,
-  findAccountByLoginNumber,
-  getAccount,
-  getDemoAccount,
+  getCurrentAccount,
+  signInAccount,
+  signInDemoAccount,
+  signOutAccount,
 } from '@/shared/repositories/account-repository'
 import type { Account, AccountRole } from '@/types/report'
-
-const CURRENT_ACCOUNT_STORAGE_KEY = 'amb-ar-current-account-id'
 
 export const useAuthStore = defineStore('auth', () => {
   const currentAccount = ref<Account | null>(null)
@@ -31,16 +29,7 @@ export const useAuthStore = defineStore('auth', () => {
     errorMessage.value = null
 
     try {
-      await ensureSeedAccounts()
-
-      const accountId = localStorage.getItem(CURRENT_ACCOUNT_STORAGE_KEY)
-
-      currentAccount.value = accountId ? await getAccount(accountId) : null
-
-      if (!currentAccount.value) {
-        localStorage.removeItem(CURRENT_ACCOUNT_STORAGE_KEY)
-      }
-
+      currentAccount.value = await getCurrentAccount()
       isInitialized.value = true
     } catch (error) {
       errorMessage.value = getErrorMessage(error)
@@ -49,20 +38,12 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function signIn(loginNumber: string): Promise<Account | null> {
+  async function signIn(loginNumber: string, password: string): Promise<Account | null> {
     isLoading.value = true
     errorMessage.value = null
 
     try {
-      await ensureSeedAccounts()
-
-      const account = await findAccountByLoginNumber(loginNumber)
-
-      if (!account) {
-        errorMessage.value = 'Аккаунт с таким номером не найден'
-
-        return null
-      }
+      const account = await signInAccount(loginNumber, password)
 
       setCurrentAccount(account)
 
@@ -73,6 +54,17 @@ export const useAuthStore = defineStore('auth', () => {
       return null
     } finally {
       isLoading.value = false
+    }
+  }
+
+  async function signOut(): Promise<void> {
+    currentAccount.value = null
+    errorMessage.value = null
+
+    try {
+      await signOutAccount()
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
     }
   }
 
@@ -81,30 +73,15 @@ export const useAuthStore = defineStore('auth', () => {
     errorMessage.value = null
 
     try {
-      const account = await getDemoAccount(role)
-
-      if (!account) {
-        errorMessage.value = 'Демо-аккаунт не найден'
-
-        return null
-      }
-
+      const account = await signInDemoAccount(role)
       setCurrentAccount(account)
-
       return account
     } catch (error) {
       errorMessage.value = getErrorMessage(error)
-
       return null
     } finally {
       isLoading.value = false
     }
-  }
-
-  function signOut(): void {
-    currentAccount.value = null
-    errorMessage.value = null
-    localStorage.removeItem(CURRENT_ACCOUNT_STORAGE_KEY)
   }
 
   return {
@@ -124,7 +101,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   function setCurrentAccount(account: Account): void {
     currentAccount.value = account
-    localStorage.setItem(CURRENT_ACCOUNT_STORAGE_KEY, account.id)
     isInitialized.value = true
   }
 })

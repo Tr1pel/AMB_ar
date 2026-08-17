@@ -87,10 +87,6 @@ async function apiRequest<T>(
     headers.set('Content-Type', 'application/json')
   }
 
-  if (options.accountId) {
-    headers.set('X-Account-Id', options.accountId)
-  }
-
   let response: Response
   const abortController = new AbortController()
   const timeoutId = setTimeout(() => abortController.abort(), API_TIMEOUT_MS)
@@ -99,6 +95,7 @@ async function apiRequest<T>(
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method,
       headers,
+      credentials: 'include',
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: abortController.signal,
     })

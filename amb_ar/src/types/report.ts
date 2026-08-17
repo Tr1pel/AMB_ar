@@ -275,6 +275,8 @@ export interface ReportSignatures {
 }
 
 export interface ReportDraft extends SyncableEntity {
+  /** Server-issued business number. LOCAL-* is temporary until the server confirms the save. */
+  reportNumber?: string
   status: ReportStatus
   archivedFromStatus?: Exclude<ReportStatus, 'archived'>
   templateId?: string
