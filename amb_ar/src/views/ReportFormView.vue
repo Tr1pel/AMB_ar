@@ -160,11 +160,11 @@ const autosaveMessage = computed(() => {
   }
 
   if (autosaveState.value === 'saving') {
-    return 'Сохраняем на сервере...'
+    return 'Сохраняем на устройстве...'
   }
 
   if (autosaveState.value === 'error') {
-    return 'Не удалось сохранить изменения'
+    return 'Не удалось сохранить локально'
   }
 
   return lastSavedAt.value

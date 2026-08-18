@@ -3,7 +3,6 @@ import { defineStore } from 'pinia'
 
 import {
   documentTemplateRepository,
-  ensureSeedDocumentTemplates,
   listDocumentTemplates,
   type SaveDocumentTemplateInput,
 } from '@/shared/repositories/document-template-repository'
@@ -28,7 +27,6 @@ export const useDocumentTemplateStore = defineStore('documentTemplate', () => {
     errorMessage.value = null
 
     try {
-      await ensureSeedDocumentTemplates()
       templates.value = await listDocumentTemplates()
     } catch (error) {
       errorMessage.value = getErrorMessage(error)

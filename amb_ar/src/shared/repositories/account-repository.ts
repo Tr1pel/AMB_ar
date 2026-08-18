@@ -1,4 +1,9 @@
 import { apiDelete, apiGet, apiPost } from '@/shared/api/server-api'
+import {
+  cacheAccount,
+  clearCachedCurrentAccount,
+  getCachedCurrentAccount,
+} from '@/shared/offline/offline-database'
 import type { Account, AccountRole } from '@/types/report'
 
 export interface SaveAccountInput {
@@ -12,27 +17,47 @@ export interface SaveAccountInput {
 
 export class AccountRepository {
   async signIn(loginNumber: string, password: string): Promise<Account> {
-    return apiPost<Account>('/api/auth/login', { loginNumber: loginNumber.trim(), password })
+    const account = await apiPost<Account>('/api/auth/login', {
+      loginNumber: loginNumber.trim(),
+      password,
+    })
+    await cacheAccount(account)
+    return account
   }
 
   async signInDemo(role: AccountRole): Promise<Account> {
-    return apiPost<Account>('/api/auth/demo', { role })
+    const account = await apiPost<Account>('/api/auth/demo', { role })
+    await cacheAccount(account)
+    return account
   }
 
   async getCurrent(): Promise<Account | null> {
+    if (!navigator.onLine) {
+      return getCachedCurrentAccount()
+    }
+
     try {
-      return await apiGet<Account>('/api/auth/session')
+      const account = await apiGet<Account>('/api/auth/session')
+      await cacheAccount(account)
+      return account
     } catch (error) {
       if (isUnauthenticated(error)) {
+        clearCachedCurrentAccount()
         return null
       }
 
-      throw error
+      return getCachedCurrentAccount()
     }
   }
 
   async signOut(): Promise<void> {
-    await apiPost('/api/auth/logout')
+    clearCachedCurrentAccount()
+
+    try {
+      await apiPost('/api/auth/logout')
+    } catch {
+      // The local session is cleared even when the server is unreachable.
+    }
   }
 
   async list(adminAccountId: string): Promise<Account[]> {

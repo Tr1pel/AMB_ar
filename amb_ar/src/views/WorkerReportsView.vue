@@ -66,15 +66,15 @@ function getReportPhotoCount(report: ReportDraft): number {
   return report.photoIds?.length ?? 0
 }
 
-function getStatusLabel(status: ReportStatus): string {
+function getStatusLabel(report: ReportDraft): string {
   const labels: Record<ReportStatus, string> = {
     draft: 'Черновик',
-    ready: 'Отправлен',
+    ready: report._syncStatus === 'pending' ? 'Ожидает отправки' : 'Отправлен',
     exported: 'Отправлен · PDF',
     archived: 'Удален',
   }
 
-  return labels[status]
+  return labels[report.status]
 }
 
 async function downloadReportPdf(report: ReportDraft): Promise<void> {
@@ -197,7 +197,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
               <h3>{{ getReportDisplayTitle(report) }}</h3>
             </div>
             <span class="report-status" :class="`report-status--${report.status}`">
-              {{ getStatusLabel(report.status) }}
+              {{ getStatusLabel(report) }}
             </span>
           </div>
 

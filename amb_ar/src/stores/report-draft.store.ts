@@ -31,6 +31,25 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
   const isSaving = ref(false)
   const errorMessage = ref<string | null>(null)
 
+  window.addEventListener('amb-ar-report-synchronized', (event) => {
+    const reportId = (event as CustomEvent<{ reportId?: string }>).detail?.reportId
+    const authStore = useAuthStore()
+
+    if (!reportId || !authStore.currentAccount) {
+      return
+    }
+
+    if (selectedReport.value?.id === reportId) {
+      void loadReport(reportId)
+    }
+
+    if (authStore.isWorker) {
+      void refreshWorkerReports()
+    } else if (authStore.isAdmin) {
+      void refreshReports()
+    }
+  })
+
   const hasReports = computed(() => reports.value.length > 0)
   const latestWorkerDraft = computed(() =>
     reports.value
@@ -64,6 +83,17 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
       authStore.isAdmin && authStore.currentAccount
         ? await listArchivedReportDrafts(authStore.currentAccount.id)
         : []
+  }
+
+  function refreshReportListsInBackground(): void {
+    const authStore = useAuthStore()
+    const refreshTask = authStore.isWorker
+      ? refreshWorkerReports()
+      : authStore.isAdmin
+        ? Promise.all([refreshReports(), refreshArchivedReports()])
+        : Promise.resolve()
+
+    void refreshTask.catch(() => undefined)
   }
 
   async function loadWorkerHistory(): Promise<void> {
@@ -124,11 +154,7 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
       selectedPhotos.value = result.photos
       selectedDocuments.value = result.documents
 
-      if (authStore.isWorker) {
-        await refreshWorkerReports()
-      } else {
-        await Promise.all([refreshReports(), refreshArchivedReports()])
-      }
+      refreshReportListsInBackground()
 
       return result.draft
     } catch (error) {
@@ -161,7 +187,7 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
       selectedReport.value = result.draft
       selectedPhotos.value = result.photos
       selectedDocuments.value = result.documents
-      await refreshWorkerReports()
+      refreshReportListsInBackground()
 
       return result.draft
     } catch (error) {
@@ -213,11 +239,7 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
         selectedDocuments.value = []
       }
 
-      if (authStore.isWorker) {
-        await refreshWorkerReports()
-      } else {
-        await Promise.all([refreshReports(), refreshArchivedReports()])
-      }
+      refreshReportListsInBackground()
 
       return true
     } catch (error) {
@@ -308,13 +330,7 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
       )
 
       selectedDocuments.value = [...selectedDocuments.value, document]
-      await loadReport(reportId)
-
-      if (useAuthStore().isWorker) {
-        await refreshWorkerReports()
-      } else {
-        await refreshReports()
-      }
+      refreshReportListsInBackground()
 
       return document
     } catch (error) {
@@ -337,16 +353,22 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
         throw new Error('Нужно войти в систему')
       }
 
-      const document = await generateReportDocumentOnServer(reportId, accountId)
+      const details = await getReportDraftDetails(reportId, accountId)
+
+      if (!details) {
+        throw new Error('Отчет не найден')
+      }
+
+      const existingDocument = [...details.documents]
+        .sort((first, second) => first.generatedAt - second.generatedAt)
+        .at(-1)
+      const document =
+        existingDocument ?? (details.draft.status === 'draft'
+          ? await generateLocalDocument(details.draft, details.photos, accountId)
+          : await generateReportDocumentOnServer(reportId, accountId))
 
       selectedDocuments.value = [...selectedDocuments.value, document]
-      await loadReport(reportId)
-
-      if (useAuthStore().isWorker) {
-        await refreshWorkerReports()
-      } else {
-        await refreshReports()
-      }
+      refreshReportListsInBackground()
 
       return document
     } catch (error) {
@@ -355,6 +377,23 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     } finally {
       isSaving.value = false
     }
+  }
+
+  async function generateLocalDocument(
+    report: ReportDraft,
+    photos: ProductPhoto[],
+    accountId: string,
+  ): Promise<GeneratedDocument> {
+    const { generateReportPdfInBrowser } = await import('@/shared/reports/browser-report-pdf')
+    const generated = await generateReportPdfInBrowser(report, photos)
+
+    return saveGeneratedDocument(
+      report.id,
+      generated.blob,
+      generated.fileName,
+      'application/pdf',
+      accountId,
+    )
   }
 
   async function submitReport(reportId: string): Promise<ReportDraft | null> {
@@ -374,7 +413,7 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
       selectedReport.value = details.draft
       selectedPhotos.value = details.photos
       selectedDocuments.value = details.documents
-      await refreshWorkerReports()
+      refreshReportListsInBackground()
 
       return details.draft
     } catch (error) {

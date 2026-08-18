@@ -413,52 +413,6 @@ async function handleApiRequest(request, response, requestUrl, db) {
     return true
   }
 
-  if (pathname === '/api/document-templates/seed' && method === 'POST') {
-    const input = await readJsonBody(request)
-    const allowedSeedIds = new Set([
-      'document-template-quality-standard',
-      'document-template-bell-pepper-inspection',
-    ])
-
-    if (!allowedSeedIds.has(input.id)) {
-      throw createHttpError(400, 'Некорректный системный макет')
-    }
-
-    // Keep a soft-deleted seed deleted. The client calls this endpoint during
-    // every template load, so checking only visible rows would resurrect it.
-    if (
-      !db.documentTemplates.some((template) => template.id === input.id)
-    ) {
-      const inputSchema = validateInputSchema(
-        input.inputSchema ?? { version: 1, steps: input.sections },
-      )
-      const renderSpec = validateRenderSpec(input.renderSpec, inputSchema)
-      const sections = inputSchema.steps
-
-      db.documentTemplates = upsert(
-        db.documentTemplates,
-        stampEntity({
-          id: input.id,
-          name: normalizeRequiredText(input.name, 'Название макета'),
-          description: String(input.description ?? '').trim(),
-          inputSchema,
-          renderSpec,
-          sections,
-          status: 'active',
-          createdByAccountId: 'system',
-          createdAt: input.createdAt ?? Date.now(),
-          updatedAt: Date.now(),
-          publishedAt: Date.now(),
-          _deletedAt: undefined,
-        }),
-      )
-      writeDb(db)
-    }
-
-    sendJson(response, db.documentTemplates.find((template) => template.id === input.id) ?? null)
-    return true
-  }
-
   if (pathname === '/api/document-templates/active' && method === 'GET') {
     const activeTemplate =
       db.documentTemplates
@@ -670,9 +624,6 @@ async function handleApiRequest(request, response, requestUrl, db) {
       draft.templateSnapshot ??
       db.documentTemplates.find((item) => item.id === draft.templateId && isVisibleEntity(item)) ??
       db.documentTemplates.find(
-        (item) => item.id === 'document-template-quality-standard' && isVisibleEntity(item),
-      ) ??
-      db.documentTemplates.find(
         (item) => item.status === 'active' && isVisibleEntity(item),
       )
 
@@ -775,16 +726,12 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const draft = requireReportAccess(db, reportId, account)
     const input = await readJsonBody(request)
 
-    if (draft.status !== 'ready' && draft.status !== 'exported') {
-      throw createHttpError(409, 'Сначала отправьте отчет администратору')
+    if (draft.status !== 'draft' && draft.status !== 'ready' && draft.status !== 'exported') {
+      throw createHttpError(409, 'Для этого отчёта нельзя сохранить PDF')
     }
 
     const documentId = normalizeEntityId(input.id, 'Идентификатор документа')
     const existingDocument = db.generatedDocuments.find((item) => item.id === documentId)
-
-    if (existingDocument) {
-      throw createHttpError(409, 'Документ с таким идентификатором уже существует')
-    }
 
     if (!input.blobBase64) {
       throw createHttpError(400, 'Документ и его содержимое обязательны')
@@ -799,6 +746,17 @@ async function handleApiRequest(request, response, requestUrl, db) {
       throw createHttpError(400, 'Поддерживаются только PDF-документы')
     }
 
+    const contentHash = createHash('sha256').update(binary).digest('hex')
+
+    if (existingDocument) {
+      if (existingDocument.draftId === reportId && existingDocument.contentHash === contentHash) {
+        sendJson(response, existingDocument)
+        return true
+      }
+
+      throw createHttpError(409, 'Документ с таким идентификатором уже существует')
+    }
+
     const document = stampEntity({
       id: documentId,
       draftId: reportId,
@@ -806,17 +764,22 @@ async function handleApiRequest(request, response, requestUrl, db) {
       mimeType,
       blobBase64: input.blobBase64,
       generatedAt: Date.now(),
-      contentHash: createHash('sha256').update(binary).digest('hex'),
+      contentHash,
       _deletedAt: undefined,
     })
-    const updatedDraft = stampEntity({
-      ...draft,
-      status: 'exported',
-      updatedAt: Date.now(),
-    })
-
     db.generatedDocuments = upsert(db.generatedDocuments, document)
-    db.reportDrafts = upsert(db.reportDrafts, updatedDraft)
+
+    if (draft.status !== 'draft') {
+      db.reportDrafts = upsert(
+        db.reportDrafts,
+        stampEntity({
+          ...draft,
+          status: 'exported',
+          updatedAt: Date.now(),
+        }),
+      )
+    }
+
     writeDb(db)
     sendJson(response, document, 201)
     return true
@@ -1638,6 +1601,19 @@ async function ensureSeeds() {
 
   if (!db.reportTemplateOptions.length) {
     db.reportTemplateOptions = createSeedTemplateOptions()
+    changed = true
+  }
+
+  const legacyTemplate = db.documentTemplates.find(
+    (template) => template.id === 'document-template-quality-standard',
+  )
+
+  if (legacyTemplate && legacyTemplate._deletedAt === undefined) {
+    const deletedAt = Date.now()
+    db.documentTemplates = upsert(
+      db.documentTemplates,
+      stampEntity({ ...legacyTemplate, updatedAt: deletedAt, _deletedAt: deletedAt }),
+    )
     changed = true
   }
 

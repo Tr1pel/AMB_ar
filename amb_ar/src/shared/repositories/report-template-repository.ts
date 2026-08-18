@@ -1,4 +1,10 @@
 import { apiDelete, apiGet, apiPost } from '@/shared/api/server-api'
+import { SEED_REPORT_TEMPLATE_OPTIONS } from '@/shared/constants/report-template-options'
+import {
+  cacheReportTemplateOptions,
+  offlineDatabase,
+} from '@/shared/offline/offline-database'
+import { createSyncMetadata } from '@/shared/sync/sync-metadata'
 import type { ReportTemplateField, ReportTemplateOption } from '@/types/report'
 
 export interface SaveReportTemplateOptionInput {
@@ -11,11 +17,45 @@ export interface SaveReportTemplateOptionInput {
 
 export class ReportTemplateRepository {
   async ensureSeeds(): Promise<void> {
-    await apiPost('/api/bootstrap')
+    const now = Date.now()
+    const cachedIds = new Set(await offlineDatabase.reportTemplateOptions.toCollection().primaryKeys())
+    const missingOptions: ReportTemplateOption[] = SEED_REPORT_TEMPLATE_OPTIONS
+      .filter((option) => !cachedIds.has(option.id))
+      .map((option) => ({
+        ...option,
+        createdAt: now,
+        updatedAt: now,
+        ...createSyncMetadata('synced'),
+      }))
+
+    if (missingOptions.length) {
+      await offlineDatabase.reportTemplateOptions.bulkPut(missingOptions)
+    }
+
+    if (navigator.onLine) {
+      try {
+        await apiPost('/api/bootstrap')
+      } catch (error) {
+        if ((await offlineDatabase.reportTemplateOptions.count()) === 0) {
+          throw error
+        }
+      }
+    }
   }
 
   async list(): Promise<ReportTemplateOption[]> {
-    return apiGet<ReportTemplateOption[]>('/api/template-options')
+    if (navigator.onLine) {
+      try {
+        const options = await apiGet<ReportTemplateOption[]>('/api/template-options')
+        await cacheReportTemplateOptions(options)
+      } catch (error) {
+        if ((await offlineDatabase.reportTemplateOptions.count()) === 0) {
+          throw error
+        }
+      }
+    }
+
+    return offlineDatabase.reportTemplateOptions.toArray()
   }
 
   async listByField(field: ReportTemplateField): Promise<ReportTemplateOption[]> {

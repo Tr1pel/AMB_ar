@@ -5,6 +5,7 @@ export async function registerServiceWorker(): Promise<void> {
 
   try {
     await navigator.serviceWorker.register('/sw.js', { scope: '/' })
+    await navigator.serviceWorker.ready
   } catch (error) {
     console.warn('Не удалось зарегистрировать кеш оболочки приложения', error)
   }

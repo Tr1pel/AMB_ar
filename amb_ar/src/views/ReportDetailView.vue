@@ -5,7 +5,7 @@ import {
   type PDFDocumentLoadingTask,
   type PDFDocumentProxy,
 } from 'pdfjs-dist'
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
+import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
@@ -95,14 +95,12 @@ async function prepareDocument(): Promise<void> {
     let savedDocument = getLatestDocument()
 
     if (!savedDocument) {
-      if (report.value.status === 'draft') {
-        throw new Error('Сначала сформируйте PDF в редакторе отчёта')
-      }
-
       if (report.value.status === 'archived') {
         throw new Error('Для архивного отчёта PDF не найден')
       }
 
+      // The editor normally creates the PDF before navigation.  Recreate it here
+      // when a prior save was interrupted, so an offline report always opens.
       savedDocument = (await reportDraftStore.generateDocument(report.value.id)) ?? undefined
     }
 
@@ -306,7 +304,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
     <section ref="viewerRef" class="pdf-viewer" aria-label="Просмотр PDF отчёта">
       <div v-if="isPreparingDocument" class="viewer-state app-card">
         <span class="viewer-spinner" aria-hidden="true" />
-        <strong>Получаем итоговый PDF с сервера…</strong>
+        <strong>Подготавливаем итоговый PDF…</strong>
       </div>
 
       <div v-else-if="previewError" class="viewer-state viewer-state--error app-card">
