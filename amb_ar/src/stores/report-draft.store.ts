@@ -15,6 +15,7 @@ import {
   saveGeneratedDocument,
   softDeleteReportDraft,
   submitReportDraft,
+  synchronizeWorkerReportDrafts,
   type CreateReportDraftInput,
   type SaveReportDraftOptions,
 } from '@/shared/repositories/report-draft-repository'
@@ -30,6 +31,7 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
   const isLoading = ref(false)
   const isSaving = ref(false)
   const errorMessage = ref<string | null>(null)
+  let workerSynchronizationPromise: Promise<void> | null = null
 
   window.addEventListener('amb-ar-report-synchronized', (event) => {
     const reportId = (event as CustomEvent<{ reportId?: string }>).detail?.reportId
@@ -102,12 +104,39 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
 
     try {
       await refreshWorkerReports()
-      void refreshWorkerReports().catch(() => undefined)
+      void synchronizeWorkerReports()
     } catch (error) {
       errorMessage.value = getErrorMessage(error)
     } finally {
       isLoading.value = false
     }
+  }
+
+  function synchronizeWorkerReports(): Promise<void> {
+    if (workerSynchronizationPromise) {
+      return workerSynchronizationPromise
+    }
+
+    const accountId = useAuthStore().currentAccount?.id
+
+    if (!accountId) {
+      return Promise.resolve()
+    }
+
+    workerSynchronizationPromise = synchronizeWorkerReportDrafts(accountId)
+      .then((synchronizedReports) => {
+        reports.value = synchronizedReports
+      })
+      .catch((error) => {
+        if (!reports.value.length) {
+          errorMessage.value = getErrorMessage(error)
+        }
+      })
+      .finally(() => {
+        workerSynchronizationPromise = null
+      })
+
+    return workerSynchronizationPromise
   }
 
   async function loadHome(): Promise<void> {

@@ -259,15 +259,6 @@ export async function listArchivedReportDrafts(adminAccountId: string): Promise<
 }
 
 export async function listWorkerReportDrafts(workerAccountId: string): Promise<ReportDraft[]> {
-  if (navigator.onLine) {
-    try {
-      const serverReports = await apiGet<ReportDraft[]>('/api/reports/mine', workerAccountId)
-      await cacheWorkerServerReports(serverReports, workerAccountId)
-    } catch {
-      // Cached reports remain available when the API cannot be reached.
-    }
-  }
-
   const reports = await offlineDatabase.reports
     .where('workerAccountId')
     .equals(workerAccountId)
@@ -276,6 +267,20 @@ export async function listWorkerReportDrafts(workerAccountId: string): Promise<R
   return reports
     .filter((report) => report._deletedAt === undefined && hasVisibleReportContent(report))
     .sort((first, second) => second.updatedAt - first.updatedAt)
+}
+
+export async function synchronizeWorkerReportDrafts(
+  workerAccountId: string,
+): Promise<ReportDraft[]> {
+  if (!navigator.onLine) {
+    return listWorkerReportDrafts(workerAccountId)
+  }
+
+  const serverReports = await apiGet<ReportDraft[]>('/api/reports/mine', workerAccountId)
+  const reportsNeedingDetails = await cacheWorkerServerReportSummaries(serverReports)
+
+  void cacheWorkerServerReportDetails(reportsNeedingDetails, workerAccountId).catch(() => undefined)
+  return listWorkerReportDrafts(workerAccountId)
 }
 
 export async function getReportDraftDetails(
@@ -435,7 +440,28 @@ async function createBlobHash(blob: Blob): Promise<string> {
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
 }
 
-async function cacheWorkerServerReports(
+async function cacheWorkerServerReportSummaries(
+  serverReports: ReportDraft[],
+): Promise<ReportDraft[]> {
+  const reportsNeedingDetails: ReportDraft[] = []
+
+  await Promise.all(serverReports.map(async (report) => {
+    const localReport = await offlineDatabase.reports.get(report.id)
+
+    if (localReport?._syncStatus === 'pending') {
+      return
+    }
+
+    if (!localReport || report.updatedAt > localReport.updatedAt) {
+      await offlineDatabase.reports.put(report)
+      reportsNeedingDetails.push(report)
+    }
+  }))
+
+  return reportsNeedingDetails
+}
+
+async function cacheWorkerServerReportDetails(
   serverReports: ReportDraft[],
   workerAccountId: string,
 ): Promise<void> {

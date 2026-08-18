@@ -3,9 +3,11 @@ import { defineStore } from 'pinia'
 
 import {
   ensureSeedReportTemplateOptions,
+  listCachedReportTemplateOptions,
   listReportTemplateOptions,
   saveReportTemplateOption,
   softDeleteReportTemplateOption,
+  synchronizeReportTemplateOptions,
   type SaveReportTemplateOptionInput,
 } from '@/shared/repositories/report-template-repository'
 import { useAuthStore } from '@/stores/auth.store'
@@ -16,6 +18,7 @@ export const useReportTemplateStore = defineStore('reportTemplate', () => {
   const isLoading = ref(false)
   const isSaving = ref(false)
   const errorMessage = ref<string | null>(null)
+  let synchronizationPromise: Promise<void> | null = null
 
   const productOptions = computed<ProductOption[]>(() =>
     getOptionsByField('productId').map((option) => ({
@@ -41,12 +44,35 @@ export const useReportTemplateStore = defineStore('reportTemplate', () => {
 
     try {
       await ensureSeedReportTemplateOptions()
-      options.value = await listReportTemplateOptions()
+      options.value = await listCachedReportTemplateOptions()
+      void synchronizeOptions()
     } catch (error) {
       errorMessage.value = getErrorMessage(error)
     } finally {
       isLoading.value = false
     }
+  }
+
+  function synchronizeOptions(): Promise<void> {
+    if (synchronizationPromise) {
+      return synchronizationPromise
+    }
+
+    synchronizationPromise = synchronizeReportTemplateOptions()
+      .then((synchronizedOptions) => {
+        options.value = synchronizedOptions
+        errorMessage.value = null
+      })
+      .catch((error) => {
+        if (!options.value.length) {
+          errorMessage.value = getErrorMessage(error)
+        }
+      })
+      .finally(() => {
+        synchronizationPromise = null
+      })
+
+    return synchronizationPromise
   }
 
   async function saveOption(input: SaveReportTemplateOptionInput): Promise<void> {

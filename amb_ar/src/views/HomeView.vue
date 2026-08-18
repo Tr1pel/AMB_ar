@@ -29,6 +29,7 @@ const activePermanentDeleteReportId = ref<string | null>(null)
 const activeRestoreReportId = ref<string | null>(null)
 const nowTimestamp = ref(Date.now())
 const reportPhotoPreviewUrls = ref<Record<string, string[]>>({})
+const isInitialLoading = ref(true)
 const photoPreviewSignatures = new Map<string, string>()
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 let photoPreviewGeneration = 0
@@ -58,15 +59,20 @@ const readyReportCount = computed(
   () => reportDraftStore.reports.filter((report) => report.status === 'ready').length,
 )
 
-onMounted(() => {
-  void refreshAdminReports()
+onMounted(async () => {
+  await refreshAdminReports()
+  isInitialLoading.value = false
   refreshTimer = setInterval(() => void refreshAdminReports(), 20_000)
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 watch(
   () => props.archiveMode,
-  () => void refreshAdminReports(),
+  async () => {
+    isInitialLoading.value = true
+    await refreshAdminReports()
+    isInitialLoading.value = false
+  },
 )
 
 onUnmounted(() => {
@@ -377,11 +383,11 @@ function downloadBlob(blob: Blob, fileName: string): void {
     >
       <article class="metric-card">
         <span class="metric-card__label">{{ props.archiveMode ? 'В архиве' : 'Всего' }}</span>
-        <strong>{{ displayedReports.length }}</strong>
+        <strong>{{ isInitialLoading ? '—' : displayedReports.length }}</strong>
       </article>
       <article v-if="!props.archiveMode" class="metric-card">
         <span class="metric-card__label">Готовы</span>
-        <strong>{{ readyReportCount }}</strong>
+        <strong>{{ isInitialLoading ? '—' : readyReportCount }}</strong>
       </article>
     </section>
 
@@ -412,10 +418,14 @@ function downloadBlob(blob: Blob, fileName: string): void {
         <div>
           <h2>{{ props.archiveMode ? 'Архивные отчеты' : 'Все отчеты' }}</h2>
         </div>
-        <span>{{ filteredReports.length }}</span>
+        <span>{{ isInitialLoading ? '—' : filteredReports.length }}</span>
       </div>
 
-      <div v-if="filteredReports.length" class="report-list">
+      <p v-if="isInitialLoading" class="empty-state" aria-live="polite">
+        Загружаем отчёты…
+      </p>
+
+      <div v-else-if="filteredReports.length" class="report-list">
         <article v-for="report in filteredReports" :key="report.id" class="report-card">
           <div class="report-card__body">
             <div class="report-card__title-row">

@@ -32,30 +32,35 @@ export class ReportTemplateRepository {
       await offlineDatabase.reportTemplateOptions.bulkPut(missingOptions)
     }
 
-    if (navigator.onLine) {
-      try {
-        await apiPost('/api/bootstrap')
-      } catch (error) {
-        if ((await offlineDatabase.reportTemplateOptions.count()) === 0) {
-          throw error
-        }
-      }
+  }
+
+  async listCached(): Promise<ReportTemplateOption[]> {
+    return offlineDatabase.reportTemplateOptions.toArray()
+  }
+
+  async synchronize(): Promise<ReportTemplateOption[]> {
+    if (!navigator.onLine) {
+      return this.listCached()
     }
+
+    await apiPost('/api/bootstrap')
+    const options = await apiGet<ReportTemplateOption[]>('/api/template-options')
+    await cacheReportTemplateOptions(options)
+    return this.listCached()
   }
 
   async list(): Promise<ReportTemplateOption[]> {
-    if (navigator.onLine) {
-      try {
-        const options = await apiGet<ReportTemplateOption[]>('/api/template-options')
-        await cacheReportTemplateOptions(options)
-      } catch (error) {
-        if ((await offlineDatabase.reportTemplateOptions.count()) === 0) {
-          throw error
-        }
-      }
-    }
+    try {
+      return await this.synchronize()
+    } catch (error) {
+      const cachedOptions = await this.listCached()
 
-    return offlineDatabase.reportTemplateOptions.toArray()
+      if (!cachedOptions.length) {
+        throw error
+      }
+
+      return cachedOptions
+    }
   }
 
   async listByField(field: ReportTemplateField): Promise<ReportTemplateOption[]> {
@@ -86,6 +91,14 @@ export async function ensureSeedReportTemplateOptions(): Promise<void> {
 
 export async function listReportTemplateOptions(): Promise<ReportTemplateOption[]> {
   return reportTemplateRepository.list()
+}
+
+export async function listCachedReportTemplateOptions(): Promise<ReportTemplateOption[]> {
+  return reportTemplateRepository.listCached()
+}
+
+export async function synchronizeReportTemplateOptions(): Promise<ReportTemplateOption[]> {
+  return reportTemplateRepository.synchronize()
 }
 
 export async function listReportTemplateOptionsByField(

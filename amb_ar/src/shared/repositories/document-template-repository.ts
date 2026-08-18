@@ -26,21 +26,34 @@ export interface SaveDocumentTemplateInput {
 }
 
 export class DocumentTemplateRepository {
-  async list(): Promise<DocumentTemplate[]> {
-    if (navigator.onLine) {
-      try {
-        const templates = await apiGet<DocumentTemplate[]>('/api/document-templates')
-        await synchronizeDocumentTemplateCache(templates)
-      } catch (error) {
-        if ((await offlineDatabase.documentTemplates.count()) === 0) {
-          throw error
-        }
-      }
-    }
-
+  async listCached(): Promise<DocumentTemplate[]> {
     return offlineDatabase.documentTemplates
       .filter((template) => template._deletedAt === undefined)
       .sortBy('updatedAt')
+  }
+
+  async synchronize(): Promise<DocumentTemplate[]> {
+    if (!navigator.onLine) {
+      return this.listCached()
+    }
+
+    const templates = await apiGet<DocumentTemplate[]>('/api/document-templates')
+    await synchronizeDocumentTemplateCache(templates)
+    return this.listCached()
+  }
+
+  async list(): Promise<DocumentTemplate[]> {
+    try {
+      return await this.synchronize()
+    } catch (error) {
+      const cachedTemplates = await this.listCached()
+
+      if (!cachedTemplates.length) {
+        throw error
+      }
+
+      return cachedTemplates
+    }
   }
 
   async getActive(): Promise<DocumentTemplate | null> {
@@ -273,6 +286,14 @@ export const documentTemplateRepository = new DocumentTemplateRepository()
 
 export async function listDocumentTemplates(): Promise<DocumentTemplate[]> {
   return documentTemplateRepository.list()
+}
+
+export async function listCachedDocumentTemplates(): Promise<DocumentTemplate[]> {
+  return documentTemplateRepository.listCached()
+}
+
+export async function synchronizeDocumentTemplates(): Promise<DocumentTemplate[]> {
+  return documentTemplateRepository.synchronize()
 }
 
 export async function getActiveDocumentTemplate(): Promise<DocumentTemplate | null> {

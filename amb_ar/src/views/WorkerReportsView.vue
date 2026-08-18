@@ -15,6 +15,7 @@ const reportDraftStore = useReportDraftStore()
 const authStore = useAuthStore()
 const searchQuery = ref('')
 const activeActionReportId = ref<string | null>(null)
+const isInitialLoading = ref(true)
 
 const filteredReports = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
@@ -38,8 +39,9 @@ const readyReportCount = computed(
   () => reportDraftStore.reports.filter((report) => report.status !== 'draft').length,
 )
 
-onMounted(() => {
-  void reportDraftStore.loadWorkerHistory()
+onMounted(async () => {
+  await reportDraftStore.loadWorkerHistory()
+  isInitialLoading.value = false
 })
 
 function formatReportTime(timestamp: number): string {
@@ -153,15 +155,15 @@ function downloadBlob(blob: Blob, fileName: string): void {
     <section class="worker-metrics" aria-label="Сводка отчетов">
       <article class="metric-card">
         <span>Всего отчетов</span>
-        <strong>{{ reportDraftStore.reports.length }}</strong>
+        <strong>{{ isInitialLoading ? '—' : reportDraftStore.reports.length }}</strong>
       </article>
       <article class="metric-card">
         <span>Готовы и PDF</span>
-        <strong>{{ readyReportCount }}</strong>
+        <strong>{{ isInitialLoading ? '—' : readyReportCount }}</strong>
       </article>
       <article class="metric-card metric-card--mode">
         <span>Черновики</span>
-        <strong>{{ reportDraftStore.reports.length - readyReportCount }}</strong>
+        <strong>{{ isInitialLoading ? '—' : reportDraftStore.reports.length - readyReportCount }}</strong>
         <small>Изменения сохраняются автоматически</small>
       </article>
     </section>
@@ -184,10 +186,14 @@ function downloadBlob(blob: Blob, fileName: string): void {
         <div>
           <h2>Сохраненные отчеты</h2>
         </div>
-        <span>{{ filteredReports.length }}</span>
+        <span>{{ isInitialLoading ? '—' : filteredReports.length }}</span>
       </div>
 
-      <div v-if="filteredReports.length" class="report-list">
+      <div v-if="isInitialLoading" class="empty-state empty-state--action" aria-live="polite">
+        <strong>Загружаем сохранённые отчёты…</strong>
+      </div>
+
+      <div v-else-if="filteredReports.length" class="report-list">
         <article v-for="report in filteredReports" :key="report.id" class="report-card">
           <div class="report-card__heading">
             <div>

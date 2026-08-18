@@ -3,7 +3,9 @@ import { defineStore } from 'pinia'
 
 import {
   documentTemplateRepository,
+  listCachedDocumentTemplates,
   listDocumentTemplates,
+  synchronizeDocumentTemplates,
   type SaveDocumentTemplateInput,
 } from '@/shared/repositories/document-template-repository'
 import { useAuthStore } from '@/stores/auth.store'
@@ -14,6 +16,7 @@ export const useDocumentTemplateStore = defineStore('documentTemplate', () => {
   const isLoading = ref(false)
   const isSaving = ref(false)
   const errorMessage = ref<string | null>(null)
+  let synchronizationPromise: Promise<void> | null = null
 
   const activeTemplate = computed(
     () => templates.value.find((template) => template.status === 'active') ?? null,
@@ -23,16 +26,45 @@ export const useDocumentTemplateStore = defineStore('documentTemplate', () => {
   )
 
   async function loadTemplates(): Promise<void> {
-    isLoading.value = true
+    isLoading.value = templates.value.length === 0
     errorMessage.value = null
 
     try {
-      templates.value = await listDocumentTemplates()
+      const cachedTemplates = await listCachedDocumentTemplates()
+      templates.value = cachedTemplates
+
+      if (!cachedTemplates.length && navigator.onLine) {
+        await synchronizeTemplates()
+      } else {
+        void synchronizeTemplates()
+      }
     } catch (error) {
       errorMessage.value = getErrorMessage(error)
     } finally {
       isLoading.value = false
     }
+  }
+
+  function synchronizeTemplates(): Promise<void> {
+    if (synchronizationPromise) {
+      return synchronizationPromise
+    }
+
+    synchronizationPromise = synchronizeDocumentTemplates()
+      .then((synchronizedTemplates) => {
+        templates.value = synchronizedTemplates
+        errorMessage.value = null
+      })
+      .catch((error) => {
+        if (!templates.value.length) {
+          errorMessage.value = getErrorMessage(error)
+        }
+      })
+      .finally(() => {
+        synchronizationPromise = null
+      })
+
+    return synchronizationPromise
   }
 
   async function createEmpty(): Promise<DocumentTemplate | null> {
