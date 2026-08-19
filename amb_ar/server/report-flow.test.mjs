@@ -123,11 +123,12 @@ test('worker submits a report and admin processes server-persisted binaries', as
   })
   assert.equal(expiredSession.status, 401)
 
-  const seedTemplate = await request(port, '/api/document-templates/seed', {
-    method: 'POST',
+  const seedTemplate = await request(port, '/api/document-templates/document-template-test-flow', {
+    method: 'PUT',
+    accountId: admin.body.id,
     body: createTemplate(),
   })
-  assert.equal(seedTemplate.status, 200)
+  assert.equal(seedTemplate.status, 201)
   assert.equal(seedTemplate.body.inputSchema.version, 1)
   assert.equal(seedTemplate.body.renderSpec.pageSize, 'A4')
   assert.equal(seedTemplate.body.renderSpec.layout, 'branded')
@@ -317,12 +318,29 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(correctedDraft.status, 200)
   assert.deepEqual(correctedDraft.body.documents, [])
 
-  const secondPreview = await request(port, `/api/reports/${reportId}/documents/generate`, {
+  const secondPreview = await request(port, `/api/reports/${reportId}/documents`, {
     method: 'POST',
     accountId: worker.body.id,
+    body: {
+      ...firstPreview.body,
+      id: 'document-local-sync',
+      draftId: reportId,
+      generatedAt: Date.now(),
+    },
   })
   assert.equal(secondPreview.status, 201)
   assert.notEqual(secondPreview.body.id, firstPreview.body.id)
+
+  const repeatedPreviewUpload = await request(port, `/api/reports/${reportId}/documents`, {
+    method: 'POST',
+    accountId: worker.body.id,
+    body: {
+      ...secondPreview.body,
+      blobBase64: firstPreview.body.blobBase64,
+    },
+  })
+  assert.equal(repeatedPreviewUpload.status, 200)
+  assert.equal(repeatedPreviewUpload.body.id, secondPreview.body.id)
 
   const previewDetails = await request(port, `/api/reports/${reportId}`, {
     accountId: worker.body.id,
@@ -440,7 +458,7 @@ test('worker submits a report and admin processes server-persisted binaries', as
     .get(firstPreview.body.id)
   const templateRow = database
     .prepare('SELECT input_schema_json, render_spec_json FROM document_templates WHERE id = ?')
-    .get('document-template-quality-standard')
+    .get('document-template-test-flow')
 
   assert.deepEqual(Buffer.from(photoRow.binary_data), photoBytes)
   assert.equal(photoRow.size, photoBytes.byteLength)
@@ -729,7 +747,7 @@ test('worker submits a report and admin processes server-persisted binaries', as
 
   const deletedActiveTemplate = await request(
     port,
-    '/api/document-templates/document-template-quality-standard',
+    '/api/document-templates/document-template-test-flow',
     {
       method: 'DELETE',
       accountId: admin.body.id,
@@ -739,24 +757,17 @@ test('worker submits a report and admin processes server-persisted binaries', as
 
   const deletedActiveTemplateDetails = await request(
     port,
-    '/api/document-templates/document-template-quality-standard',
+    '/api/document-templates/document-template-test-flow',
     { accountId: admin.body.id },
   )
   assert.equal(deletedActiveTemplateDetails.status, 404)
 
-  const seedAfterDeletion = await request(port, '/api/document-templates/seed', {
-    method: 'POST',
-    body: createTemplate(),
-  })
-  assert.equal(seedAfterDeletion.status, 200)
-  assert.equal(typeof seedAfterDeletion.body._deletedAt, 'number')
-
-  const templatesAfterSeedRetry = await request(port, '/api/document-templates', {
+  const templatesAfterDeletion = await request(port, '/api/document-templates', {
     accountId: admin.body.id,
   })
   assert.equal(
-    templatesAfterSeedRetry.body.some(
-      (template) => template.id === 'document-template-quality-standard',
+    templatesAfterDeletion.body.some(
+      (template) => template.id === 'document-template-test-flow',
     ),
     false,
   )
@@ -811,8 +822,8 @@ function createTemplate() {
   ]
 
   return {
-    id: 'document-template-quality-standard',
-    name: 'Стандартный отчет ОКК',
+    id: 'document-template-test-flow',
+    name: 'Интеграционный макет',
     description: 'Интеграционный макет',
     status: 'active',
     inputSchema: { version: 1, steps: sections },
@@ -931,7 +942,7 @@ function createDraft(id, workerAccountId) {
   return {
     id,
     status: 'draft',
-    templateId: 'document-template-quality-standard',
+    templateId: 'document-template-test-flow',
     workerAccountId,
     productId: 'sweet-red-pepper',
     productName: 'Перец красный',

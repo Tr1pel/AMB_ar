@@ -1,9 +1,8 @@
-import { apiDelete, apiGet, apiPost, apiPut } from '@/shared/api/server-api'
+import { apiDelete, apiGet, apiPut } from '@/shared/api/server-api'
 import {
-  BELL_PEPPER_DOCUMENT_TEMPLATE_ID,
-  BELL_PEPPER_DOCUMENT_TEMPLATE_SECTIONS,
-  DEFAULT_DOCUMENT_TEMPLATE_SECTIONS,
-} from '@/shared/constants/document-template'
+  synchronizeDocumentTemplateCache,
+  offlineDatabase,
+} from '@/shared/offline/offline-database'
 import { createEntityId, createSyncMetadata } from '@/shared/sync/sync-metadata'
 import {
   createDefaultRenderSpec,
@@ -26,71 +25,55 @@ export interface SaveDocumentTemplateInput {
   renderSpec: DocumentRenderSpec
 }
 
-const SEED_TEMPLATE_ID = 'document-template-quality-standard'
-
 export class DocumentTemplateRepository {
-  async ensureSeed(): Promise<void> {
-    const templates = await this.list()
-    const now = Date.now()
-    const seeds = [
-      {
-        id: SEED_TEMPLATE_ID,
-        name: 'Стандартный отчет ОКК',
-        description: 'Базовый макет отчета по инспекции качества.',
-        sections: DEFAULT_DOCUMENT_TEMPLATE_SECTIONS,
-      },
-      {
-        id: BELL_PEPPER_DOCUMENT_TEMPLATE_ID,
-        name: 'Инспекция качества болгарского перца',
-        description: 'Пошаговый макет по форме QC-RPS-003: температура, качество, упаковка, решение и фотографии.',
-        sections: BELL_PEPPER_DOCUMENT_TEMPLATE_SECTIONS,
-      },
-    ]
+  async listCached(): Promise<DocumentTemplate[]> {
+    return offlineDatabase.documentTemplates
+      .filter((template) => template._deletedAt === undefined)
+      .sortBy('updatedAt')
+  }
 
-    for (const seed of seeds) {
-      if (templates.some((template) => template.id === seed.id && !template._deletedAt)) {
-        continue
-      }
-
-      const sections = structuredClone(seed.sections)
-      await apiPost<DocumentTemplate>('/api/document-templates/seed', {
-        id: seed.id,
-        name: seed.name,
-        description: seed.description,
-        status: 'active',
-        inputSchema: createInputSchema(sections),
-        renderSpec: createDefaultRenderSpec(sections, seed.name),
-        sections,
-        createdByAccountId: 'system',
-        createdAt: now,
-        updatedAt: now,
-        publishedAt: now,
-        ...createSyncMetadata('synced'),
-      })
+  async synchronize(): Promise<DocumentTemplate[]> {
+    if (!navigator.onLine) {
+      return this.listCached()
     }
+
+    const templates = await apiGet<DocumentTemplate[]>('/api/document-templates')
+    await synchronizeDocumentTemplateCache(templates)
+    return this.listCached()
   }
 
   async list(): Promise<DocumentTemplate[]> {
-    return apiGet<DocumentTemplate[]>('/api/document-templates')
-  }
-
-  async getActive(): Promise<DocumentTemplate | null> {
     try {
-      return await apiGet<DocumentTemplate>('/api/document-templates/active')
+      return await this.synchronize()
     } catch (error) {
-      if (isNotFound(error)) {
-        return null
+      const cachedTemplates = await this.listCached()
+
+      if (!cachedTemplates.length) {
+        throw error
       }
 
-      throw error
+      return cachedTemplates
     }
   }
 
+  async getActive(): Promise<DocumentTemplate | null> {
+    const templates = await this.list()
+    return templates.find((template) => template.status === 'active') ?? null
+  }
+
   async getById(templateId: string): Promise<DocumentTemplate | null> {
+    const cached = await offlineDatabase.documentTemplates.get(templateId)
+
+    if (cached && cached._deletedAt === undefined) {
+      return cached
+    }
+
     try {
-      return await apiGet<DocumentTemplate>(
+      const template = await apiGet<DocumentTemplate>(
         `/api/document-templates/${encodeURIComponent(templateId)}`,
       )
+      await offlineDatabase.documentTemplates.put(template)
+      return template
     } catch (error) {
       if (isNotFound(error)) {
         return null
@@ -301,12 +284,16 @@ function regenerateNodeIds(sections: DocumentTemplateSection[]): DocumentTemplat
 
 export const documentTemplateRepository = new DocumentTemplateRepository()
 
-export async function ensureSeedDocumentTemplates(): Promise<void> {
-  await documentTemplateRepository.ensureSeed()
-}
-
 export async function listDocumentTemplates(): Promise<DocumentTemplate[]> {
   return documentTemplateRepository.list()
+}
+
+export async function listCachedDocumentTemplates(): Promise<DocumentTemplate[]> {
+  return documentTemplateRepository.listCached()
+}
+
+export async function synchronizeDocumentTemplates(): Promise<DocumentTemplate[]> {
+  return documentTemplateRepository.synchronize()
 }
 
 export async function getActiveDocumentTemplate(): Promise<DocumentTemplate | null> {

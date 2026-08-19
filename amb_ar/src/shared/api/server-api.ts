@@ -1,7 +1,7 @@
 import type { GeneratedDocument, ProductPhoto, ReportDraft } from '@/types/report'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
-const API_TIMEOUT_MS = 30_000
+const API_TIMEOUT_MS = 5_000
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
 
@@ -81,6 +81,10 @@ async function apiRequest<T>(
     accountId?: string
   },
 ): Promise<T> {
+  if (!navigator.onLine) {
+    throw new Error('Сервер недоступен. Нет подключения к сети.')
+  }
+
   const headers = new Headers()
 
   if (options.body !== undefined) {

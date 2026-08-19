@@ -2,19 +2,22 @@ import {
   apiDelete,
   apiGet,
   apiPost,
-  apiPut,
   deserializeDocument,
   deserializePhoto,
-  serializeDocument,
-  serializePhoto,
   type SerializedGeneratedDocument,
   type SerializedProductPhoto,
   type ServerReportDetails,
 } from '@/shared/api/server-api'
 import { getProductLabel } from '@/shared/constants/products'
+import {
+  enqueueReportSync,
+  getLocalReportDetails,
+  offlineDatabase,
+  putReportDetails,
+} from '@/shared/offline/offline-database'
+import { triggerSynchronization } from '@/shared/offline/sync-engine'
 import { photoCompressionService } from '@/shared/photos/photo-compression-service'
 import {
-  ensureSeedDocumentTemplates,
   getActiveDocumentTemplate,
   getDocumentTemplateById,
 } from '@/shared/repositories/document-template-repository'
@@ -153,8 +156,6 @@ export async function createReportDraft(
     : null
   const existingDraft = existingDetails?.draft
 
-  await ensureSeedDocumentTemplates()
-
   const requestedTemplate = input.templateId
     ? await getDocumentTemplateById(input.templateId)
     : null
@@ -195,7 +196,7 @@ export async function createReportDraft(
         caption: photoInput.caption.trim(),
         sortOrder: photoInput.sortOrder,
         createdAt: existingPhoto?.createdAt ?? now,
-        ...createSyncMetadata('synced'),
+        ...createSyncMetadata('pending'),
       }
     }),
   )
@@ -208,7 +209,9 @@ export async function createReportDraft(
       ? {
           templateId: selectedTemplate.id,
           name: selectedTemplate.name,
-          sections: structuredClone(selectedTemplate.sections),
+          inputSchema: cloneTemplateData(selectedTemplate.inputSchema),
+          renderSpec: cloneTemplateData(selectedTemplate.renderSpec),
+          sections: cloneTemplateData(selectedTemplate.sections),
         }
       : existingDraft?.templateSnapshot,
     workerAccountId: input.workerAccountId,
@@ -229,18 +232,13 @@ export async function createReportDraft(
     photoIds: photos.map((photo) => photo.id),
     createdAt: existingDraft?.createdAt ?? now,
     updatedAt: now,
-    ...createSyncMetadata('synced'),
+    ...createSyncMetadata('pending'),
   }
-  const serverDetails = await apiPut<ServerReportDetails>(
-    `/api/reports/${encodeURIComponent(draftId)}`,
-    {
-      draft,
-      photos: await Promise.all(photos.map(serializePhoto)),
-    },
-    accountId,
-  )
+  await putReportDetails(draft, photos, [])
+  await enqueueReportSync(draftId, accountId, 'save')
+  triggerSynchronization()
 
-  return deserializeDetails(serverDetails)
+  return { draft, photos, documents: [] }
 }
 
 function createLocalReportNumber(draftId: string): string {
@@ -261,21 +259,49 @@ export async function listArchivedReportDrafts(adminAccountId: string): Promise<
 }
 
 export async function listWorkerReportDrafts(workerAccountId: string): Promise<ReportDraft[]> {
-  const reports = await apiGet<ReportDraft[]>('/api/reports/mine', workerAccountId)
-  return reports.filter(hasVisibleReportContent)
+  const reports = await offlineDatabase.reports
+    .where('workerAccountId')
+    .equals(workerAccountId)
+    .toArray()
+
+  return reports
+    .filter((report) => report._deletedAt === undefined && hasVisibleReportContent(report))
+    .sort((first, second) => second.updatedAt - first.updatedAt)
+}
+
+export async function synchronizeWorkerReportDrafts(
+  workerAccountId: string,
+): Promise<ReportDraft[]> {
+  if (!navigator.onLine) {
+    return listWorkerReportDrafts(workerAccountId)
+  }
+
+  const serverReports = await apiGet<ReportDraft[]>('/api/reports/mine', workerAccountId)
+  const reportsNeedingDetails = await cacheWorkerServerReportSummaries(serverReports)
+
+  void cacheWorkerServerReportDetails(reportsNeedingDetails, workerAccountId).catch(() => undefined)
+  return listWorkerReportDrafts(workerAccountId)
 }
 
 export async function getReportDraftDetails(
   draftId: string,
   accountId: string,
 ): Promise<ReportDraftDetails | null> {
+  const localDetails = await getLocalReportDetails(draftId)
+
+  if (localDetails && localDetails.draft._deletedAt === undefined) {
+    return localDetails
+  }
+
   try {
     const details = await apiGet<ServerReportDetails>(
       `/api/reports/${encodeURIComponent(draftId)}`,
       accountId,
     )
 
-    return deserializeDetails(details)
+    const deserialized = deserializeDetails(details)
+    await putReportDetails(deserialized.draft, deserialized.photos, deserialized.documents)
+    return deserialized
   } catch (error) {
     if (isNotFound(error)) {
       return null
@@ -313,15 +339,28 @@ export async function saveGeneratedDocument(
     blob: documentBlob,
     generatedAt,
     contentHash: await createBlobHash(documentBlob),
-    ...createSyncMetadata('synced'),
+    ...createSyncMetadata('pending'),
   }
-  const savedDocument = await apiPost<SerializedGeneratedDocument>(
-    `/api/reports/${encodeURIComponent(draftId)}/documents`,
-    await serializeDocument(document),
-    accountId,
-  )
+  const details = await getLocalReportDetails(draftId)
 
-  return deserializeDocument(savedDocument)
+  if (!details) {
+    throw new Error('Отчет не найден')
+  }
+
+  // A generated PDF is part of the local report state.  Bump the draft version as
+  // well, otherwise an already running save synchronization may overwrite this
+  // document with the older snapshot it started with.
+  const updatedDraft: ReportDraft = {
+    ...details.draft,
+    updatedAt: generatedAt,
+    ...createSyncMetadata('pending'),
+  }
+
+  await putReportDetails(updatedDraft, details.photos, [document])
+  await enqueueReportSync(draftId, accountId, 'save')
+  triggerSynchronization()
+
+  return document
 }
 
 export async function generateReportDocumentOnServer(
@@ -341,17 +380,44 @@ export async function submitReportDraft(
   draftId: string,
   accountId: string,
 ): Promise<ReportDraftDetails> {
-  const details = await apiPost<ServerReportDetails>(
-    `/api/reports/${encodeURIComponent(draftId)}/submit`,
-    undefined,
-    accountId,
-  )
+  const details = await getLocalReportDetails(draftId)
 
-  return deserializeDetails(details)
+  if (!details) {
+    throw new Error('Отчет не найден')
+  }
+
+  if (!details.documents.length) {
+    throw new Error('Сначала сформируйте и проверьте актуальный PDF')
+  }
+
+  const pendingDraft: ReportDraft = {
+    ...details.draft,
+    status: 'ready',
+    updatedAt: Date.now(),
+    ...createSyncMetadata('pending'),
+  }
+  await putReportDetails(pendingDraft, details.photos, details.documents)
+  await enqueueReportSync(draftId, accountId, 'submit')
+  triggerSynchronization()
+
+  return { ...details, draft: pendingDraft }
 }
 
 export async function softDeleteReportDraft(draftId: string, accountId: string): Promise<void> {
-  await apiDelete(`/api/reports/${encodeURIComponent(draftId)}`, accountId)
+  const details = await getLocalReportDetails(draftId)
+
+  if (!details) {
+    return
+  }
+
+  const deletedDraft: ReportDraft = {
+    ...details.draft,
+    _deletedAt: Date.now(),
+    ...createSyncMetadata('pending'),
+  }
+  await putReportDetails(deletedDraft, details.photos, details.documents)
+  await enqueueReportSync(draftId, accountId, 'delete')
+  triggerSynchronization()
 }
 
 export async function permanentlyDeleteArchivedReport(
@@ -372,6 +438,51 @@ async function createBlobHash(blob: Blob): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
 
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+async function cacheWorkerServerReportSummaries(
+  serverReports: ReportDraft[],
+): Promise<ReportDraft[]> {
+  const reportsNeedingDetails: ReportDraft[] = []
+
+  await Promise.all(serverReports.map(async (report) => {
+    const localReport = await offlineDatabase.reports.get(report.id)
+
+    if (localReport?._syncStatus === 'pending') {
+      return
+    }
+
+    if (!localReport || report.updatedAt > localReport.updatedAt) {
+      await offlineDatabase.reports.put(report)
+      reportsNeedingDetails.push(report)
+    }
+  }))
+
+  return reportsNeedingDetails
+}
+
+async function cacheWorkerServerReportDetails(
+  serverReports: ReportDraft[],
+  workerAccountId: string,
+): Promise<void> {
+  await Promise.all(serverReports.map(async (report) => {
+    const localReport = await offlineDatabase.reports.get(report.id)
+
+    if (localReport?._syncStatus === 'pending') {
+      return
+    }
+
+    try {
+      const details = await apiGet<ServerReportDetails>(
+        `/api/reports/${encodeURIComponent(report.id)}`,
+        workerAccountId,
+      )
+      const deserialized = deserializeDetails(details)
+      await putReportDetails(deserialized.draft, deserialized.photos, deserialized.documents)
+    } catch {
+      await offlineDatabase.reports.put(report)
+    }
+  }))
 }
 
 function deserializeDetails(details: ServerReportDetails): ReportDraftDetails {
@@ -405,6 +516,10 @@ function templateHasProductField(
 
 function isNotFound(error: unknown): boolean {
   return error instanceof Error && /не найден|404/i.test(error.message)
+}
+
+function cloneTemplateData<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
 }
 
 export class ReportRepository {

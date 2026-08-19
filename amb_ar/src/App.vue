@@ -3,6 +3,7 @@ import { computed, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth.store'
+import { useSyncStore } from '@/stores/sync.store'
 
 interface NavigationItem {
   id: 'reports' | 'archive' | 'report-action' | 'templates' | 'accounts'
@@ -15,6 +16,7 @@ interface NavigationItem {
 
 const route = useRoute()
 const authStore = useAuthStore()
+const syncStore = useSyncStore()
 
 const showShell = computed(() => route.name !== 'login' && authStore.currentAccount)
 const pageTitle = computed(() => String(route.meta.title ?? 'Рабочая область'))
@@ -86,6 +88,7 @@ const navItems = computed<NavigationItem[]>(() => {
 })
 onMounted(() => {
   void authStore.initialize()
+  void syncStore.initialize()
 })
 
 function isNavItemActive(path: string): boolean {
@@ -189,6 +192,17 @@ async function signOut(): Promise<void> {
             <small>{{ roleLabel }}</small>
           </div>
         </div>
+        <button
+          v-if="authStore.isWorker"
+          class="sync-status"
+          :class="{ 'sync-status--offline': !syncStore.isOnline }"
+          type="button"
+          :title="syncStore.lastError ?? syncStore.statusLabel"
+          @click="syncStore.synchronizeNow"
+        >
+          <span aria-hidden="true" />
+          {{ syncStore.statusLabel }}
+        </button>
         <div class="mobile-account">
           <span class="account-avatar">{{ initials }}</span>
           <div class="mobile-account__identity">
@@ -434,6 +448,31 @@ async function signOut(): Promise<void> {
   gap: 10px;
 }
 
+.sync-status {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.sync-status span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #348b55;
+}
+
+.sync-status--offline span {
+  background: #c07b28;
+}
+
 .workspace-content {
   min-height: calc(100vh - 72px);
 }
@@ -484,6 +523,11 @@ async function signOut(): Promise<void> {
 
   .topbar-account {
     display: none;
+  }
+
+  .sync-status {
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 
   .mobile-account {

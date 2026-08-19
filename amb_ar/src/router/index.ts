@@ -3,8 +3,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.store'
 import type { AccountRole } from '@/types/report'
 import HomeView from '@/views/HomeView.vue'
+import LoginView from '@/views/LoginView.vue'
 import ReportFormView from '@/views/ReportFormView.vue'
 import ReportTemplateSelectionView from '@/views/ReportTemplateSelectionView.vue'
+import WorkerReportsView from '@/views/WorkerReportsView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -18,7 +20,7 @@ const router = createRouter({
     {
       path: '/login',
       name: 'login',
-      component: () => import('@/views/LoginView.vue'),
+      component: LoginView,
       meta: { title: 'Вход' },
     },
     {
@@ -63,7 +65,7 @@ const router = createRouter({
     {
       path: '/reports/history',
       name: 'worker-reports',
-      component: () => import('@/views/WorkerReportsView.vue'),
+      component: WorkerReportsView,
       meta: { requiresAuth: true, roles: ['worker'], title: 'Мои отчеты' },
     },
     {
