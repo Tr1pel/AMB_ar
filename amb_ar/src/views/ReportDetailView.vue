@@ -9,6 +9,7 @@ import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
+import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import { useAuthStore } from '@/stores/auth.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
 import type { GeneratedDocument } from '@/types/report'
@@ -232,9 +233,11 @@ function savePdfDocument(): void {
 async function submitToAdministrator(): Promise<void> {
   if (!report.value || !isInspectorReview.value || isSubmittingReport.value) return
 
-  const shouldSubmit = window.confirm(
-    'Отправить проверенный отчёт администратору?\n\nПосле отправки отчёт больше нельзя будет изменить.',
-  )
+  const shouldSubmit = await requestConfirmation({
+    title: 'Отправить отчёт?',
+    message: 'После отправки отчёт больше нельзя будет изменить.',
+    confirmLabel: 'Отправить',
+  })
 
   if (!shouldSubmit) return
 

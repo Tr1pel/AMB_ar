@@ -2,6 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
+import ConfirmationDialog from '@/components/ui/ConfirmationDialog.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useSyncStore } from '@/stores/sync.store'
 
@@ -20,6 +21,25 @@ const syncStore = useSyncStore()
 
 const showShell = computed(() => route.name !== 'login' && authStore.currentAccount)
 const pageTitle = computed(() => String(route.meta.title ?? 'Рабочая область'))
+const isReportWorkScreen = computed(
+  () => route.name === 'edit-report' || route.name === 'report-details',
+)
+const isAdminReportsPage = computed(
+  () => route.name === 'admin-reports' || route.name === 'admin-report-archive',
+)
+const hasAdminGreenHeader = computed(
+  () =>
+    isAdminReportsPage.value ||
+    route.name === 'admin-template' ||
+    route.name === 'admin-accounts',
+)
+const topbarTitle = computed(() =>
+  isAdminReportsPage.value
+    ? route.name === 'admin-report-archive'
+      ? 'Архив отчетов'
+      : 'Отчеты работников'
+    : pageTitle.value,
+)
 const roleLabel = computed(() => (authStore.isAdmin ? 'Администратор' : 'Инспектор ОКК'))
 const initials = computed(() =>
   (authStore.currentAccount?.fullName ?? 'АМ')
@@ -135,7 +155,11 @@ async function signOut(): Promise<void> {
 </script>
 
 <template>
-  <div v-if="showShell" class="workspace-shell">
+  <div
+    v-if="showShell"
+    class="workspace-shell"
+    :class="{ 'workspace-shell--compact-topbar': isReportWorkScreen }"
+  >
     <aside class="workspace-sidebar">
       <RouterLink class="brand" to="/" aria-label="Рунаш — главная">
         <img src="/runash-logo.png" alt="Рунаш" />
@@ -178,12 +202,15 @@ async function signOut(): Promise<void> {
     </aside>
 
     <section class="workspace-main">
-      <header class="workspace-topbar">
+      <header
+        class="workspace-topbar"
+        :class="{ 'workspace-topbar--admin-reports': hasAdminGreenHeader }"
+      >
         <div class="topbar-heading">
           <span class="mobile-brand">
             <img src="/runash-logo.png" alt="Рунаш" />
           </span>
-          <h1 v-if="pageTitle">{{ pageTitle }}</h1>
+          <h1 v-if="topbarTitle && !isReportWorkScreen">{{ topbarTitle }}</h1>
         </div>
         <div class="topbar-account">
           <span class="account-avatar">{{ initials }}</span>
@@ -193,7 +220,7 @@ async function signOut(): Promise<void> {
           </div>
         </div>
         <button
-          v-if="authStore.isWorker"
+          v-if="authStore.isWorker && !isReportWorkScreen"
           class="sync-status"
           :class="{ 'sync-status--offline': !syncStore.isOnline }"
           type="button"
@@ -245,10 +272,12 @@ async function signOut(): Promise<void> {
   </div>
 
   <RouterView v-else />
+  <ConfirmationDialog />
 </template>
 
 <style scoped>
 .workspace-shell {
+  --workspace-topbar-offset: 72px;
   min-height: 100vh;
   background: var(--color-background);
 }
@@ -482,6 +511,14 @@ async function signOut(): Promise<void> {
 }
 
 @media (max-width: 960px) {
+  .workspace-shell {
+    --workspace-topbar-offset: 114px;
+  }
+
+  .workspace-shell--compact-topbar {
+    --workspace-topbar-offset: 72px;
+  }
+
   .workspace-sidebar {
     display: none;
   }
@@ -491,7 +528,7 @@ async function signOut(): Promise<void> {
   }
 
   .workspace-topbar {
-    grid-template-columns: 112px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
   }
 
@@ -500,8 +537,9 @@ async function signOut(): Promise<void> {
   }
 
   .topbar-heading h1 {
-    grid-column: 1 / -1;
+    grid-column: 1;
     grid-row: 2;
+    min-width: 0;
   }
 
   .mobile-brand {
@@ -526,8 +564,10 @@ async function signOut(): Promise<void> {
   }
 
   .sync-status {
-    grid-column: 1 / -1;
-    justify-self: start;
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+    white-space: nowrap;
   }
 
   .mobile-account {
@@ -619,6 +659,33 @@ async function signOut(): Promise<void> {
   .mobile-nav__link--active {
     background: var(--color-primary);
     color: #ffffff !important;
+  }
+}
+
+@media (min-width: 961px) {
+  .workspace-topbar--admin-reports {
+    gap: 20px;
+    min-height: 72px;
+    margin: 0 12px;
+    border-bottom: 0;
+    border-radius: 0 0 8px 8px;
+    background: var(--color-primary);
+    color: #ffffff;
+  }
+
+  .workspace-topbar--admin-reports h1 {
+    font-size: 1.65rem;
+    line-height: 1.1;
+  }
+
+  .workspace-topbar--admin-reports .topbar-account strong,
+  .workspace-topbar--admin-reports .topbar-account small {
+    color: #ffffff;
+  }
+
+  .workspace-topbar--admin-reports .account-avatar {
+    background: rgba(255, 255, 255, 0.15);
+    color: #ffffff;
   }
 }
 

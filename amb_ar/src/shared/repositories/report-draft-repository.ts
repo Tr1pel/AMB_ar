@@ -277,10 +277,47 @@ export async function synchronizeWorkerReportDrafts(
   }
 
   const serverReports = await apiGet<ReportDraft[]>('/api/reports/mine', workerAccountId)
+  await hideLocallyArchivedWorkerReports(serverReports, workerAccountId)
   const reportsNeedingDetails = await cacheWorkerServerReportSummaries(serverReports)
 
   void cacheWorkerServerReportDetails(reportsNeedingDetails, workerAccountId).catch(() => undefined)
   return listWorkerReportDrafts(workerAccountId)
+}
+
+/**
+ * The worker's history is rendered from IndexedDB to remain available offline.
+ * An administrator archiving a submitted report removes it from `/mine`, so
+ * reconcile that omission with the local cache as a soft delete.  Pending
+ * local changes are deliberately preserved: they still need to be sent first.
+ * When the administrator restores the report, its newer server summary is
+ * cached again by `cacheWorkerServerReportSummaries` below.
+ */
+async function hideLocallyArchivedWorkerReports(
+  serverReports: ReportDraft[],
+  workerAccountId: string,
+): Promise<void> {
+  const visibleServerReportIds = new Set(serverReports.map((report) => report.id))
+  const archivedAt = Date.now()
+
+  await offlineDatabase.transaction('rw', offlineDatabase.reports, async () => {
+    const localReports = await offlineDatabase.reports
+      .where('workerAccountId')
+      .equals(workerAccountId)
+      .toArray()
+
+    const reportsToHide = localReports
+      .filter(
+        (report) =>
+          report._deletedAt === undefined &&
+          report._syncStatus !== 'pending' &&
+          !visibleServerReportIds.has(report.id),
+      )
+      .map((report) => ({ ...report, _deletedAt: archivedAt }))
+
+    if (reportsToHide.length) {
+      await offlineDatabase.reports.bulkPut(reportsToHide)
+    }
+  })
 }
 
 export async function getReportDraftDetails(
@@ -289,7 +326,15 @@ export async function getReportDraftDetails(
 ): Promise<ReportDraftDetails | null> {
   const localDetails = await getLocalReportDetails(draftId)
 
-  if (localDetails && localDetails.draft._deletedAt === undefined) {
+  // A report list only caches its summary, without photos and PDF files.  When
+  // online, refresh synchronized reports from the server before opening them so
+  // an administrator always receives the complete submitted report. Pending
+  // drafts stay local-first to preserve the inspector's offline workflow.
+  if (
+    localDetails &&
+    localDetails.draft._deletedAt === undefined &&
+    (!navigator.onLine || localDetails.draft._syncStatus === 'pending')
+  ) {
     return localDetails
   }
 
@@ -393,7 +438,9 @@ export async function submitReportDraft(
   const pendingDraft: ReportDraft = {
     ...details.draft,
     status: 'ready',
-    updatedAt: Date.now(),
+    // Keep the report content timestamp paired with the generated PDF.  The
+    // server requires the PDF to be at least as new as `draft.updatedAt`; a
+    // submission-state transition does not change report content.
     ...createSyncMetadata('pending'),
   }
   await putReportDetails(pendingDraft, details.photos, details.documents)
@@ -420,6 +467,13 @@ export async function softDeleteReportDraft(draftId: string, accountId: string):
   triggerSynchronization()
 }
 
+export async function archiveReportDraft(
+  reportId: string,
+  adminAccountId: string,
+): Promise<void> {
+  await apiDelete(`/api/reports/${encodeURIComponent(reportId)}`, adminAccountId)
+}
+
 export async function permanentlyDeleteArchivedReport(
   reportId: string,
   adminAccountId: string,
@@ -435,7 +489,16 @@ export async function restoreArchivedReport(
 }
 
 async function createBlobHash(blob: Blob): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
+  const subtleCrypto = globalThis.crypto?.subtle
+
+  if (!subtleCrypto) {
+    // Web Crypto requires a secure context. The server recomputes the authoritative
+    // SHA-256 hash when the locally saved document is synchronized, so this value
+    // only needs to identify the unsynchronized local document.
+    return `local-${blob.size}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }
+
+  const digest = await subtleCrypto.digest('SHA-256', await blob.arrayBuffer())
 
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
 }

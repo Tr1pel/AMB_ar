@@ -17,18 +17,14 @@ export interface SaveAccountInput {
 
 export class AccountRepository {
   async signIn(loginNumber: string, password: string): Promise<Account> {
-    const account = await apiPost<Account>('/api/auth/login', {
+    return apiPost<Account>('/api/auth/login', {
       loginNumber: loginNumber.trim(),
       password,
     })
-    await cacheAccount(account)
-    return account
   }
 
   async signInDemo(role: AccountRole): Promise<Account> {
-    const account = await apiPost<Account>('/api/auth/demo', { role })
-    await cacheAccount(account)
-    return account
+    return apiPost<Account>('/api/auth/demo', { role })
   }
 
   async getCurrent(): Promise<Account | null> {

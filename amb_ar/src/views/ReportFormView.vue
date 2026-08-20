@@ -4,6 +4,7 @@ import { onBeforeRouteLeave, useRouter } from 'vue-router'
 
 import FormSection from '@/components/reports/FormSection.vue'
 import PhotoPicker from '@/components/reports/PhotoPicker.vue'
+import { createEntityId } from '@/shared/sync/sync-metadata'
 import { getTemplateInputSections } from '@/shared/templates/document-template-schema'
 import { useAuthStore } from '@/stores/auth.store'
 import { useDocumentTemplateStore } from '@/stores/document-template.store'
@@ -839,7 +840,9 @@ function appendPhoto(file: File, category: ReportPhotoCategory, templateFieldId?
   photos.value = [
     ...photos.value,
     {
-      id: `photo_${globalThis.crypto.randomUUID()}`,
+      // Web Crypto is unavailable when the development server is opened over HTTP
+      // from another device.  The shared helper falls back to a local identifier.
+      id: createEntityId('photo'),
       file,
       url: URL.createObjectURL(file),
       fileName: file.name || 'Фото отчета',
@@ -1307,7 +1310,7 @@ function hydrateExistingReport(): void {
     </section>
 
     <div v-if="isFormReady" class="form-local-strip">
-      <strong>Черновик · шаг {{ completedStepCount }} из {{ steps.length }}</strong>
+      <strong>Шаг {{ completedStepCount }} из {{ steps.length }}</strong>
       <span class="autosave-status" :class="`autosave-status--${autosaveState}`" aria-live="polite">
         {{ autosaveMessage }}
       </span>
@@ -2201,7 +2204,11 @@ function hydrateExistingReport(): void {
 }
 
 .form-local-strip {
+  position: sticky;
+  z-index: 10;
+  top: var(--workspace-topbar-offset, 72px);
   display: flex;
+  align-self: start;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
@@ -2437,12 +2444,12 @@ function hydrateExistingReport(): void {
   }
 
   .form-local-strip {
-    align-items: flex-start;
-    flex-direction: column;
+    gap: 8px;
   }
 
+  .form-local-strip strong,
   .autosave-status {
-    margin-left: 0;
+    white-space: nowrap;
   }
 
   .wizard-actions {

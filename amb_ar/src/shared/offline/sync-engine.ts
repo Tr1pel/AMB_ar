@@ -13,6 +13,7 @@ import {
   getLocalReportDetails,
   offlineDatabase,
   putReportDetails,
+  removeOrphanedReportSyncTasks,
   type SyncQueueItem,
 } from '@/shared/offline/offline-database'
 import { checkServerConnectivity } from '@/shared/offline/network-status'
@@ -64,6 +65,8 @@ async function runSyncQueue(): Promise<void> {
     notifySyncUpdated()
     return
   }
+
+  await removeOrphanedReportSyncTasks()
 
   const now = Date.now()
   const items = await offlineDatabase.syncQueue
@@ -141,6 +144,10 @@ async function synchronizeReport(item: SyncQueueItem): Promise<boolean> {
   const serverPhotos = serverDetails.photos.map(deserializePhoto)
   const savedDraft = markEntitySynced(serverDetails.draft)
   const savedPhotos = serverPhotos.map(markEntitySynced)
+  const latestDocument = [...localDetails.documents]
+    .filter((document) => document._deletedAt === undefined)
+    .sort((first, second) => first.generatedAt - second.generatedAt)
+    .at(-1)
 
   if (item.intent === 'save') {
     const currentDetails = await getLocalReportDetails(item.reportId)
@@ -149,14 +156,24 @@ async function synchronizeReport(item: SyncQueueItem): Promise<boolean> {
       return false
     }
 
-    await putReportDetails(savedDraft, savedPhotos, currentDetails.documents)
+    if (!latestDocument) {
+      await putReportDetails(savedDraft, savedPhotos, currentDetails.documents)
+      return true
+    }
+
+    const serializedDocument = await apiPost<SerializedGeneratedDocument>(
+      `/api/reports/${encodeURIComponent(item.reportId)}/documents`,
+      await serializeDocument(latestDocument),
+      item.accountId,
+    )
+    const savedDocument = markEntitySynced(deserializeDocument(serializedDocument))
+    await putReportDetails(
+      savedDraft,
+      savedPhotos,
+      mergeDocuments(currentDetails.documents, savedDocument),
+    )
     return true
   }
-
-  const latestDocument = [...localDetails.documents]
-    .filter((document) => document._deletedAt === undefined)
-    .sort((first, second) => first.generatedAt - second.generatedAt)
-    .at(-1)
 
   if (!latestDocument) {
     throw new Error('Сначала сформируйте PDF отчета')

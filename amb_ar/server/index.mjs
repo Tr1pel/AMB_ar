@@ -932,6 +932,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
 
     const now = Date.now()
     const createdAt = existingDraft?.createdAt ?? now
+    const incomingUpdatedAt = Number(incomingDraft.updatedAt)
     const draft = stampEntity({
       id: reportId,
       reportNumber:
@@ -960,7 +961,10 @@ async function handleApiRequest(request, response, requestUrl, db) {
       signatures: normalizeJsonObject(incomingDraft.signatures, 'Подписи'),
       photoIds: savedPhotos.map((photo) => photo.id),
       createdAt,
-      updatedAt: now,
+      // This timestamp describes the client-side report content, which is also
+      // what the generated PDF represents.  Do not replace it with the server
+      // receipt time, otherwise a just-uploaded PDF appears out of date.
+      updatedAt: Number.isFinite(incomingUpdatedAt) ? incomingUpdatedAt : now,
       _deletedAt: undefined,
     })
 

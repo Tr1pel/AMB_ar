@@ -84,6 +84,112 @@ export function clearCachedCurrentAccount(): void {
   localStorage.removeItem('amb-ar-current-account-id')
 }
 
+export interface LocalAccountTransition {
+  hasPersonalData: boolean
+  hasPendingChanges: boolean
+}
+
+/**
+ * Returns the state of report data belonging to accounts other than the one
+ * that is about to sign in. Shared reference data deliberately is not part of
+ * this transition and stays available offline.
+ */
+export async function inspectLocalAccountTransition(
+  nextAccountId: string,
+): Promise<LocalAccountTransition> {
+  const [reports, queueItems] = await Promise.all([
+    offlineDatabase.reports.toArray(),
+    offlineDatabase.syncQueue.toArray(),
+  ])
+  const previousReports = reports.filter((report) => report.workerAccountId !== nextAccountId)
+  const previousQueueItems = queueItems.filter((item) => item.accountId !== nextAccountId)
+
+  return {
+    hasPersonalData: previousReports.length > 0 || previousQueueItems.length > 0,
+    hasPendingChanges:
+      previousQueueItems.length > 0 ||
+      previousReports.some((report) => report._syncStatus !== 'synced'),
+  }
+}
+
+/**
+ * Permanently clears report-specific browser data for other accounts only.
+ * Call this after the user explicitly accepts data removal, or when all of the
+ * previous account's data has already synchronized with the server.
+ */
+export async function clearOtherAccountsPersonalData(nextAccountId: string): Promise<void> {
+  await offlineDatabase.transaction(
+    'rw',
+    [
+      offlineDatabase.reports,
+      offlineDatabase.photos,
+      offlineDatabase.documents,
+      offlineDatabase.syncQueue,
+    ],
+    async () => {
+      const previousReports = (await offlineDatabase.reports.toArray()).filter(
+        (report) => report.workerAccountId !== nextAccountId,
+      )
+      const previousReportIds = new Set(previousReports.map((report) => report.id))
+      const previousQueueItems = (await offlineDatabase.syncQueue.toArray()).filter(
+        (item) => item.accountId !== nextAccountId,
+      )
+
+      previousQueueItems.forEach((item) => previousReportIds.add(item.reportId))
+
+      await offlineDatabase.reports.bulkDelete([...previousReportIds])
+      await offlineDatabase.syncQueue.bulkDelete(previousQueueItems.map((item) => item.id))
+
+      const [photos, documents] = await Promise.all([
+        offlineDatabase.photos.toArray(),
+        offlineDatabase.documents.toArray(),
+      ])
+      await offlineDatabase.photos.bulkDelete(
+        photos
+          .filter((photo) => previousReportIds.has(photo.draftId))
+          .map((photo) => photo.id),
+      )
+      await offlineDatabase.documents.bulkDelete(
+        documents
+          .filter((document) => previousReportIds.has(document.draftId))
+          .map((document) => document.id),
+      )
+    },
+  )
+}
+
+/**
+ * Removes queue entries that can no longer be sent because their local report
+ * was already removed. A pending delete is retained while its soft-deleted
+ * report still exists, because it must still reach the server.
+ */
+export async function removeOrphanedReportSyncTasks(): Promise<void> {
+  await offlineDatabase.transaction(
+    'rw',
+    [offlineDatabase.reports, offlineDatabase.syncQueue],
+    async () => {
+      const reportsById = new Map(
+        (await offlineDatabase.reports.toArray()).map((report) => [report.id, report]),
+      )
+      const orphanedTaskIds = (await offlineDatabase.syncQueue.toArray())
+        .filter((item) => {
+          const report = reportsById.get(item.reportId)
+
+          if (!report || report.workerAccountId !== item.accountId) {
+            return true
+          }
+
+          return item.intent !== 'delete' && report._deletedAt !== undefined
+        })
+        .map((item) => item.id)
+
+      if (orphanedTaskIds.length) {
+        await offlineDatabase.syncQueue.bulkDelete(orphanedTaskIds)
+      }
+    },
+  )
+}
+
 export async function synchronizeDocumentTemplateCache(templates: DocumentTemplate[]): Promise<void> {
   await offlineDatabase.transaction('rw', offlineDatabase.documentTemplates, async () => {
     const serverTemplateIds = new Set(templates.map((template) => template.id))

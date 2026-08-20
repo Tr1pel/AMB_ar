@@ -1,12 +1,16 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { offlineDatabase } from '@/shared/offline/offline-database'
+import {
+  offlineDatabase,
+  removeOrphanedReportSyncTasks,
+} from '@/shared/offline/offline-database'
 import {
   checkServerConnectivity,
   subscribeToNetworkStatus,
 } from '@/shared/offline/network-status'
 import { processSyncQueue } from '@/shared/offline/sync-engine'
+import { useAuthStore } from '@/stores/auth.store'
 
 export const useSyncStore = defineStore('sync', () => {
   const isOnline = ref(navigator.onLine)
@@ -37,7 +41,12 @@ export const useSyncStore = defineStore('sync', () => {
   }
 
   async function refresh(): Promise<void> {
-    const queue = await offlineDatabase.syncQueue.toArray()
+    await removeOrphanedReportSyncTasks()
+
+    const currentAccountId = useAuthStore().currentAccount?.id
+    const queue = currentAccountId
+      ? (await offlineDatabase.syncQueue.toArray()).filter((item) => item.accountId === currentAccountId)
+      : []
     pendingCount.value = queue.length
     pendingSubmissionCount.value = queue.filter((item) => item.intent === 'submit').length
     isSyncing.value = queue.some((item) => item.status === 'processing')

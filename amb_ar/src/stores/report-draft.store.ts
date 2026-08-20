@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import { PRODUCT_OPTIONS } from '@/shared/constants/products'
 import {
+  archiveReportDraft,
   createReportDraft,
   createReportDraftFromTemplate,
   generateReportDocumentOnServer,
@@ -46,9 +47,21 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     }
 
     if (authStore.isWorker) {
-      void refreshWorkerReports()
+      void synchronizeWorkerReports()
     } else if (authStore.isAdmin) {
       void refreshReports()
+    }
+  })
+
+  // The synchronization engine checks connectivity on start, when the tab
+  // becomes active, and every 30 seconds. Reconcile the worker's local history
+  // on the same cycle so administrative archiving/restoring is reflected even
+  // while the inspector keeps the history screen open.
+  window.addEventListener('amb-ar-sync-updated', () => {
+    const authStore = useAuthStore()
+
+    if (authStore.isWorker && authStore.currentAccount) {
+      void synchronizeWorkerReports()
     }
   })
 
@@ -260,15 +273,19 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     errorMessage.value = null
 
     try {
-      await softDeleteReportDraft(reportId, authStore.currentAccount.id)
+      if (authStore.isAdmin) {
+        await archiveReportDraft(reportId, authStore.currentAccount.id)
+        await Promise.all([refreshReports(), refreshArchivedReports()])
+      } else {
+        await softDeleteReportDraft(reportId, authStore.currentAccount.id)
+        refreshReportListsInBackground()
+      }
 
       if (selectedReport.value?.id === reportId) {
         selectedReport.value = null
         selectedPhotos.value = []
         selectedDocuments.value = []
       }
-
-      refreshReportListsInBackground()
 
       return true
     } catch (error) {

@@ -140,7 +140,6 @@ async function startReport(): Promise<void> {
       v-if="viewStep === 'template' && documentTemplateStore.activeTemplates.length"
       class="choice-footer"
     >
-      <span>{{ selectedTemplate ? selectedTemplate.name : 'Макет не выбран' }}</span>
       <button
         class="primary-button"
         type="button"
@@ -333,6 +332,11 @@ async function startReport(): Promise<void> {
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 14px 36px var(--color-shadow);
   backdrop-filter: blur(16px);
+  justify-content: flex-end;
+}
+
+.choice-footer .primary-button {
+  white-space: nowrap;
 }
 
 .choice-footer .primary-button:disabled {
@@ -369,10 +373,5 @@ async function startReport(): Promise<void> {
     bottom: 82px;
   }
 
-  .choice-footer > span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 }
 </style>

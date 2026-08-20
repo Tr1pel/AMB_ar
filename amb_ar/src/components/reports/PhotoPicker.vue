@@ -21,6 +21,7 @@ const emit = defineEmits<{
 
 const editingPhotoId = ref<string | null>(null)
 const openedPhoto = ref<PhotoPickerItem | null>(null)
+const isSourceMenuOpen = ref(false)
 
 function handlePhotoChange(event: Event): void {
   const input = event.target as HTMLInputElement
@@ -31,6 +32,7 @@ function handlePhotoChange(event: Event): void {
   }
 
   input.value = ''
+  isSourceMenuOpen.value = false
 }
 
 function updateCaption(photoId: string, event: Event): void {
@@ -69,18 +71,20 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 
 <template>
   <div class="photo-picker">
-    <label class="photo-picker__dropzone" :class="{ 'photo-picker__dropzone--disabled': disabled }">
-      <input
-        class="photo-picker__input"
-        type="file"
-        accept="image/*"
-        capture="environment"
+    <div class="photo-picker__dropzone" :class="{ 'photo-picker__dropzone--disabled': disabled }">
+      <button
+        class="photo-picker__add-button"
+        type="button"
         :disabled="disabled"
-        @change="handlePhotoChange"
-      />
-      <span class="photo-picker__title">Прикрепить фото</span>
-      <span class="photo-picker__hint">Камера или галерея телефона</span>
-    </label>
+        aria-haspopup="menu"
+        :aria-expanded="isSourceMenuOpen"
+        @click="isSourceMenuOpen = !isSourceMenuOpen"
+      >
+        <span class="photo-picker__title">Добавить фото</span>
+        <span class="photo-picker__hint">Сделайте снимок или выберите изображение из галереи</span>
+      </button>
+
+    </div>
 
     <div v-if="photos.length" class="photo-picker__grid">
       <figure v-for="photo in photos" :key="photo.id" class="photo-picker__preview">
@@ -131,6 +135,50 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
     </div>
 
     <Teleport to="body">
+      <Transition name="photo-picker-source">
+        <div
+          v-if="isSourceMenuOpen"
+          class="photo-picker__source-overlay"
+          @click.self="isSourceMenuOpen = false"
+        >
+          <section
+            class="photo-picker__source-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Добавить фото"
+          >
+            <h2>Добавить фото</h2>
+            <p>Выберите источник изображения</p>
+            <div class="photo-picker__source-actions">
+              <label class="photo-picker__source-action">
+                <input
+                  class="photo-picker__input"
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  :disabled="disabled"
+                  @change="handlePhotoChange"
+                />
+                Снять фото
+              </label>
+              <label class="photo-picker__source-action">
+                <input
+                  class="photo-picker__input"
+                  type="file"
+                  accept="image/*"
+                  :disabled="disabled"
+                  @change="handlePhotoChange"
+                />
+                Выбрать из галереи
+              </label>
+            </div>
+            <button class="photo-picker__source-cancel" type="button" @click="isSourceMenuOpen = false">
+              Отмена
+            </button>
+          </section>
+        </div>
+      </Transition>
+
       <div
         v-if="openedPhoto"
         class="photo-picker__lightbox"
@@ -173,6 +221,24 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
   opacity: 0.65;
 }
 
+.photo-picker__add-button {
+  display: grid;
+  width: 100%;
+  min-height: 88px;
+  place-items: center;
+  gap: 6px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.photo-picker__add-button:disabled {
+  cursor: not-allowed;
+}
+
 .photo-picker__input {
   position: absolute;
   width: 1px;
@@ -189,6 +255,113 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 .photo-picker__hint {
   color: var(--color-text-muted);
   font-size: 0.88rem;
+}
+
+.photo-picker__source-overlay {
+  position: fixed;
+  z-index: 1001;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(12, 18, 14, 0.52);
+}
+
+.photo-picker-source-enter-active,
+.photo-picker-source-leave-active {
+  transition: opacity 220ms ease;
+}
+
+.photo-picker-source-enter-active .photo-picker__source-dialog,
+.photo-picker-source-leave-active .photo-picker__source-dialog {
+  transition: opacity 220ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.photo-picker-source-enter-from,
+.photo-picker-source-leave-to {
+  opacity: 0;
+}
+
+.photo-picker-source-enter-from .photo-picker__source-dialog,
+.photo-picker-source-leave-to .photo-picker__source-dialog {
+  opacity: 0;
+  transform: translateY(10px) scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .photo-picker-source-enter-active,
+  .photo-picker-source-leave-active,
+  .photo-picker-source-enter-active .photo-picker__source-dialog,
+  .photo-picker-source-leave-active .photo-picker__source-dialog {
+    transition: none;
+  }
+}
+
+.photo-picker__source-dialog {
+  width: min(100%, 380px);
+  border-radius: 12px;
+  padding: 22px;
+  background: var(--color-surface);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.photo-picker__source-dialog h2,
+.photo-picker__source-dialog p {
+  margin: 0;
+}
+
+.photo-picker__source-dialog h2 {
+  color: var(--color-primary);
+  font-size: 1.15rem;
+}
+
+.photo-picker__source-dialog p {
+  margin-top: 6px;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.photo-picker__source-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.photo-picker__source-action {
+  display: grid;
+  min-height: 42px;
+  place-items: center;
+  border: 1px solid var(--color-primary);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--color-surface);
+  color: var(--color-primary);
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.photo-picker__source-action:hover {
+  background: var(--color-primary-soft);
+}
+
+.photo-picker__source-cancel {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  margin-top: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+}
+
+.photo-picker__source-cancel:hover {
+  background: var(--color-surface-muted);
 }
 
 .photo-picker__grid {

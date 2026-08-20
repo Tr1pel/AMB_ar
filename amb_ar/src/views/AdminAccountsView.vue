@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 
 import { useAccountAdminStore } from '@/stores/account-admin.store'
 import { generateAccountLoginNumber } from '@/shared/repositories/account-repository'
+import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import { useAuthStore } from '@/stores/auth.store'
 import type { Account, AccountRole } from '@/types/report'
 
@@ -72,7 +73,6 @@ function generatePassword(): void {
   }
 
   accountForm.password = characters.join('')
-  passwordCopyMessage.value = 'Пароль сгенерирован — сохраните аккаунт'
 }
 
 async function generateLoginNumber(): Promise<void> {
@@ -141,9 +141,12 @@ async function saveAccount(): Promise<void> {
 
 async function deleteAccount(accountId: string): Promise<void> {
   const account = accountAdminStore.accounts.find((item) => item.id === accountId)
-  const shouldDelete = window.confirm(
-    `Отключить аккаунт «${account?.fullName ?? accountId}» на этой рабочей станции?`,
-  )
+  const shouldDelete = await requestConfirmation({
+    title: 'Отключить аккаунт?',
+    message: `Отключить аккаунт «${account?.fullName ?? accountId}» на этой рабочей станции?`,
+    confirmLabel: 'Отключить',
+    destructive: true,
+  })
 
   if (!shouldDelete) {
     return
@@ -162,9 +165,6 @@ async function deleteAccount(accountId: string): Promise<void> {
     <section class="screen-heading">
       <div>
         <h1 class="screen-title">Аккаунты</h1>
-        <p class="screen-subtitle">
-          Управляйте доступом сотрудников по уникальным номерам и назначайте рабочие роли.
-        </p>
       </div>
     </section>
 
@@ -251,22 +251,22 @@ async function deleteAccount(accountId: string): Promise<void> {
               minlength="8"
               :required="!editingAccountId"
             />
+            <button
+              class="password-copy-button"
+              type="button"
+              :disabled="!accountForm.password"
+              aria-label="Скопировать пароль"
+              title="Скопировать пароль"
+              @click="copyPassword"
+            >
+              <img src="/icons/clone-svgrepo-com.svg" alt="" aria-hidden="true" />
+            </button>
             <button class="secondary-button" type="button" @click="generatePassword">
               Сгенерировать
             </button>
           </span>
         </label>
 
-        <div class="password-actions">
-          <button
-            class="secondary-button"
-            type="button"
-            :disabled="!accountForm.password"
-            @click="copyPassword"
-          >
-            Копировать
-          </button>
-        </div>
         <p v-if="passwordCopyMessage" class="password-message">{{ passwordCopyMessage }}</p>
 
         <div class="account-form__actions">
@@ -297,6 +297,12 @@ async function deleteAccount(accountId: string): Promise<void> {
 </template>
 
 <style scoped>
+@media (min-width: 961px) {
+  .screen-heading .screen-title {
+    display: none;
+  }
+}
+
 .accounts-layout {
   display: grid;
   grid-template-columns: minmax(280px, 0.65fr) minmax(0, 1fr);
@@ -357,12 +363,6 @@ async function deleteAccount(accountId: string): Promise<void> {
   width: 100%;
 }
 
-.password-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .field-with-action {
   display: flex;
   gap: 8px;
@@ -376,6 +376,33 @@ async function deleteAccount(accountId: string): Promise<void> {
 .field-with-action .secondary-button {
   min-height: 46px;
   white-space: nowrap;
+}
+
+.password-copy-button {
+  display: grid;
+  width: 46px;
+  min-width: 46px;
+  min-height: 46px;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.password-copy-button:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+}
+
+.password-copy-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.password-copy-button img {
+  width: 21px;
+  height: 21px;
 }
 
 @media (max-width: 520px) {

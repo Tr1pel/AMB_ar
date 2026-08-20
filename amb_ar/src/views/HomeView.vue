@@ -7,6 +7,7 @@ import {
   listReportPhotoPreviews,
 } from '@/shared/repositories/report-draft-repository'
 import { getReportDisplayTitle } from '@/shared/reports/report-display'
+import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import { useAuthStore } from '@/stores/auth.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
 import type { ReportDraft, ReportStatus } from '@/types/report'
@@ -308,9 +309,12 @@ async function downloadReportPdf(report: ReportDraft): Promise<void> {
 }
 
 async function archiveReport(report: ReportDraft): Promise<void> {
-  const shouldArchive = window.confirm(
-    `Переместить отчет «${report.mainInfo.orderNumber || report.productName}» в архив?\n\nОтчет исчезнет из рабочего журнала и будет безвозвратно удален через месяц вместе с фотографиями и PDF. До этого срока он останется доступен в архиве.`,
-  )
+  const shouldArchive = await requestConfirmation({
+    title: 'Переместить в архив?',
+    message: `Отчет «${report.mainInfo.orderNumber || report.productName}» исчезнет из рабочего журнала и будет безвозвратно удален через месяц вместе с фотографиями и PDF. До этого срока он останется доступен в архиве.`,
+    confirmLabel: 'Переместить',
+    destructive: true,
+  })
 
   if (!shouldArchive) {
     return
@@ -322,9 +326,12 @@ async function archiveReport(report: ReportDraft): Promise<void> {
 }
 
 async function permanentlyDeleteReport(report: ReportDraft): Promise<void> {
-  const shouldDelete = window.confirm(
-    `Удалить отчет «${report.mainInfo.orderNumber || report.productName}» навсегда?\n\nВыбранный отчет, все его фотографии и PDF будут удалены немедленно без возможности восстановления. Остальные отчеты в архиве не изменятся.`,
-  )
+  const shouldDelete = await requestConfirmation({
+    title: 'Удалить навсегда?',
+    message: `Выбранный отчет «${report.mainInfo.orderNumber || report.productName}», все его фотографии и PDF будут удалены немедленно без возможности восстановления. Остальные отчеты в архиве не изменятся.`,
+    confirmLabel: 'Удалить',
+    destructive: true,
+  })
 
   if (!shouldDelete) {
     return
@@ -340,9 +347,11 @@ async function permanentlyDeleteReport(report: ReportDraft): Promise<void> {
 }
 
 async function restoreReport(report: ReportDraft): Promise<void> {
-  const shouldRestore = window.confirm(
-    `Вернуть отчет «${report.mainInfo.orderNumber || report.productName}» из архива?`,
-  )
+  const shouldRestore = await requestConfirmation({
+    title: 'Вернуть отчёт?',
+    message: `Вернуть отчет «${report.mainInfo.orderNumber || report.productName}» из архива?`,
+    confirmLabel: 'Вернуть',
+  })
 
   if (!shouldRestore) {
     return
@@ -831,6 +840,12 @@ function downloadBlob(blob: Blob, fileName: string): void {
 
   .home-hero__actions {
     grid-template-columns: max-content max-content;
+  }
+}
+
+@media (min-width: 961px) {
+  .home-hero {
+    display: none;
   }
 }
 

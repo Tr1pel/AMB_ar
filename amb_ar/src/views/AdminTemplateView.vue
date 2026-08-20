@@ -12,6 +12,7 @@ import {
   getTemplateRenderSpec,
   syncRenderSpec,
 } from '@/shared/templates/document-template-schema'
+import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import { useDocumentTemplateStore } from '@/stores/document-template.store'
 import type {
   DocumentTemplate,
@@ -233,9 +234,11 @@ async function publishTemplate(): Promise<void> {
     return
   }
 
-  const shouldPublish = window.confirm(
-    `Опубликовать «${savedTemplate.name}»? Проверяющие смогут выбрать его для новых отчетов.`,
-  )
+  const shouldPublish = await requestConfirmation({
+    title: 'Опубликовать макет?',
+    message: `Проверяющие смогут выбрать «${savedTemplate.name}» для новых отчетов.`,
+    confirmLabel: 'Опубликовать',
+  })
 
   if (!shouldPublish) {
     return
@@ -259,9 +262,12 @@ async function duplicateTemplate(template: DocumentTemplate): Promise<void> {
 }
 
 async function deleteTemplate(template: DocumentTemplate): Promise<void> {
-  const shouldDelete = window.confirm(
-    `Удалить макет «${template.name}»?\n\nОн исчезнет из списка и больше не будет доступен инспекторам для новых отчетов. Уже созданные отчеты сохранят использованную структуру. Это действие нельзя отменить.`,
-  )
+  const shouldDelete = await requestConfirmation({
+    title: 'Удалить макет?',
+    message: `Макет «${template.name}» исчезнет из списка и больше не будет доступен инспекторам для новых отчетов. Уже созданные отчеты сохранят использованную структуру. Это действие нельзя отменить.`,
+    confirmLabel: 'Удалить',
+    destructive: true,
+  })
 
   if (!shouldDelete) {
     return
@@ -301,13 +307,19 @@ function selectSection(sectionId: string): void {
   selectedFieldId.value = null
 }
 
-function removeSection(section: DocumentTemplateSection): void {
+async function removeSection(section: DocumentTemplateSection): Promise<void> {
   if (!editorTemplate.value || editorTemplate.value.sections.length === 1) {
     return
   }
 
   const shouldDelete =
-    !section.fields.length || window.confirm(`Удалить раздел «${section.title}» и все его поля?`)
+    !section.fields.length ||
+    (await requestConfirmation({
+      title: 'Удалить раздел?',
+      message: `Удалить раздел «${section.title}» и все его поля?`,
+      confirmLabel: 'Удалить',
+      destructive: true,
+    }))
 
   if (!shouldDelete) {
     return
@@ -569,13 +581,20 @@ function getVisibleRenderFieldCount(renderSection: DocumentRenderSectionSpec): n
   return renderSection.fields.filter((field) => !field.hidden).length
 }
 
-function resetRenderSpec(): void {
+async function resetRenderSpec(): Promise<void> {
   const template = editorTemplate.value
 
-  if (
-    !template ||
-    !window.confirm('Сбросить порядок и настройки печатных полей по структуре мобильной формы?')
-  ) {
+  if (!template) {
+    return
+  }
+
+  const shouldReset = await requestConfirmation({
+    title: 'Сбросить настройки?',
+    message: 'Сбросить порядок и настройки печатных полей по структуре мобильной формы?',
+    confirmLabel: 'Сбросить',
+  })
+
+  if (!shouldReset) {
     return
   }
 
@@ -772,19 +791,7 @@ function formatTime(timestamp: number): string {
       <section class="screen-heading template-heading">
         <div>
           <h1 class="screen-title">Макеты отчетов</h1>
-          <p class="screen-subtitle">
-            Создавайте структуру отчета, поля и варианты для каждого макета.
-          </p>
         </div>
-        <button
-          class="primary-button"
-          type="button"
-          :disabled="documentTemplateStore.isSaving"
-          @click="createTemplate"
-        >
-          <span aria-hidden="true">＋</span>
-          Новый макет
-        </button>
       </section>
 
       <section class="template-catalog">
@@ -812,7 +819,7 @@ function formatTime(timestamp: number): string {
               aria-label="Создать копию"
               @click="duplicateTemplate(template)"
             >
-              ⧉
+              <img src="/icons/clone-svgrepo-com.svg" alt="" aria-hidden="true" />
             </button>
           </div>
 
@@ -835,7 +842,10 @@ function formatTime(timestamp: number): string {
           </dl>
 
           <div class="template-card__footer">
-            <small>Обновлен {{ formatDate(template.updatedAt) }}</small>
+            <small class="template-card__updated">
+              <span>Обновлен</span>
+              <span>{{ formatDate(template.updatedAt) }} {{ formatTime(template.updatedAt) }}</span>
+            </small>
             <div>
               <button class="secondary-button" type="button" @click="editTemplate(template)">
                 {{ template.status === 'draft' ? 'Продолжить' : 'Редактировать' }}
@@ -913,7 +923,7 @@ function formatTime(timestamp: number): string {
           @click="editorMode = 'input'"
         >
           <strong>Форма инспектора</strong>
-          <small>inputSchema · шаги и поля для телефона</small>
+          <small>шаги и поля отчета</small>
         </button>
         <button
           type="button"
@@ -921,7 +931,7 @@ function formatTime(timestamp: number): string {
           @click="editorMode = 'render'"
         >
           <strong>Печатный PDF</strong>
-          <small>renderSpec · страницы и размещение</small>
+          <small>страницы и размещение</small>
         </button>
       </nav>
 
@@ -958,7 +968,6 @@ function formatTime(timestamp: number): string {
         <aside class="builder-structure app-card">
           <div class="panel-heading">
             <div>
-              <p class="screen-kicker">Структура</p>
               <h2>Разделы отчета</h2>
             </div>
             <button class="small-add-button" type="button" @click="addSection">＋</button>
@@ -1668,6 +1677,12 @@ function formatTime(timestamp: number): string {
 </template>
 
 <style scoped>
+@media (min-width: 961px) {
+  .template-heading .screen-title {
+    display: none;
+  }
+}
+
 .template-page {
   width: min(100%, 1440px);
 }
@@ -1753,6 +1768,11 @@ function formatTime(timestamp: number): string {
   font-weight: 900;
 }
 
+.icon-button img {
+  width: 18px;
+  height: 18px;
+}
+
 .template-card h2 {
   color: var(--color-text);
   font-size: 1.08rem;
@@ -1796,6 +1816,12 @@ function formatTime(timestamp: number): string {
 .template-card__footer small {
   color: var(--color-text-muted);
   font-size: 0.7rem;
+}
+
+.template-card__updated {
+  display: grid;
+  gap: 2px;
+  white-space: nowrap;
 }
 
 .template-card__footer .secondary-button {
@@ -2817,6 +2843,16 @@ function formatTime(timestamp: number): string {
 
   .template-catalog {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .template-card__footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .template-card__footer > div {
+    justify-content: flex-end;
   }
 
   .render-field-row {

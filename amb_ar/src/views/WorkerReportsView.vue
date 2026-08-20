@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { getReportDraftDetails } from '@/shared/repositories/report-draft-repository'
+import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import {
   getReportDisplayTitle,
   reportHasProductField,
@@ -109,9 +110,12 @@ async function downloadReportPdf(report: ReportDraft): Promise<void> {
 }
 
 async function deleteReport(report: ReportDraft): Promise<void> {
-  const shouldDelete = window.confirm(
-    `Удалить отчет «${report.productName || 'Без названия'}» из истории?`,
-  )
+  const shouldDelete = await requestConfirmation({
+    title: 'Удалить отчёт?',
+    message: `Удалить отчет «${report.productName || 'Без названия'}» из истории?`,
+    confirmLabel: 'Удалить',
+    destructive: true,
+  })
 
   if (!shouldDelete) {
     return
@@ -237,13 +241,6 @@ function downloadBlob(blob: Blob, fileName: string): void {
             >
               Открыть
             </RouterLink>
-            <RouterLink
-              v-if="report.status === 'draft'"
-              class="secondary-button"
-              :to="{ name: 'edit-report', params: { reportId: report.id } }"
-            >
-              Продолжить
-            </RouterLink>
             <button
               class="secondary-button"
               type="button"
@@ -252,6 +249,13 @@ function downloadBlob(blob: Blob, fileName: string): void {
             >
               {{ activeActionReportId === report.id ? 'Создаем...' : 'PDF' }}
             </button>
+            <RouterLink
+              v-if="report.status === 'draft'"
+              class="secondary-button"
+              :to="{ name: 'edit-report', params: { reportId: report.id } }"
+            >
+              Продолжить
+            </RouterLink>
             <button
               v-if="report.status === 'draft'"
               class="delete-button"
@@ -548,6 +552,10 @@ function downloadBlob(blob: Blob, fileName: string): void {
   }
 
   .delete-button {
+    grid-column: 1 / -1;
+  }
+
+  .report-card__actions > :nth-child(3) {
     grid-column: 1 / -1;
   }
 }
