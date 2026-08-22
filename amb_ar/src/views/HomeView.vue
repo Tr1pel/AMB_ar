@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
+import { localeTag } from '@/shared/i18n'
 import {
   getReportDraftDetails,
   listReportPhotoPreviews,
@@ -166,7 +167,7 @@ function handleVisibilityChange(): void {
 }
 
 function formatReportTime(timestamp: number): string {
-  return new Intl.DateTimeFormat('ru-RU', {
+  return new Intl.DateTimeFormat(localeTag.value, {
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',
@@ -175,7 +176,7 @@ function formatReportTime(timestamp: number): string {
 }
 
 function formatArchiveDate(timestamp: number): string {
-  return new Intl.DateTimeFormat('ru-RU', {
+  return new Intl.DateTimeFormat(localeTag.value, {
     day: '2-digit',
     month: 'long',
     year: 'numeric',
@@ -438,7 +439,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
         <article v-for="report in filteredReports" :key="report.id" class="report-card">
           <div class="report-card__body">
             <div class="report-card__title-row">
-              <h3 class="report-card__title">
+              <h3 class="report-card__title" data-i18n-ignore>
                 {{ getReportDisplayTitle(report) }}
               </h3>
               <span class="report-status" :class="`report-status--${report.status}`">

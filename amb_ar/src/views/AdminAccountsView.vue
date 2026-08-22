@@ -20,6 +20,7 @@ const accountForm = reactive({
   password: '',
 })
 const passwordCopyMessage = ref('')
+const isPasswordResetting = ref(false)
 
 onMounted(() => {
   void accountAdminStore.loadAccounts()
@@ -32,6 +33,7 @@ function resetAccountForm(): void {
   accountForm.role = ''
   accountForm.password = ''
   passwordCopyMessage.value = ''
+  isPasswordResetting.value = false
   numberGenerationError.value = ''
 }
 
@@ -52,11 +54,12 @@ function startEdit(account: Account): void {
   accountForm.role = account.role
   accountForm.password = ''
   passwordCopyMessage.value = ''
+  isPasswordResetting.value = false
   numberGenerationError.value = ''
   isAccountPanelOpen.value = true
 }
 
-function generatePassword(): void {
+function createPassword(): string {
   const groups = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%&*?']
   const allCharacters = groups.join('')
   const characters = groups.map((group) => randomCharacter(group))
@@ -72,7 +75,11 @@ function generatePassword(): void {
     characters[swapIndex] = currentCharacter
   }
 
-  accountForm.password = characters.join('')
+  return characters.join('')
+}
+
+function generatePassword(): void {
+  accountForm.password = createPassword()
 }
 
 async function generateLoginNumber(): Promise<void> {
@@ -110,6 +117,23 @@ async function copyPassword(): Promise<void> {
   passwordCopyMessage.value = 'Пароль скопирован'
 }
 
+async function offerCredentialsCopy(
+  fullName: string,
+  loginNumber: string,
+  password: string,
+): Promise<void> {
+  const credentials = `Сотрудник: ${fullName}\nID: ${loginNumber}\nПароль: ${password}`
+  const shouldCopy = await requestConfirmation({
+    title: 'Скопировать данные сотрудника',
+    message: credentials,
+    confirmLabel: 'Скопировать',
+  })
+
+  if (shouldCopy) {
+    await navigator.clipboard.writeText(credentials)
+  }
+}
+
 function randomCharacter(characters: string): string {
   return characters[randomIndex(characters.length)] ?? ''
 }
@@ -125,18 +149,33 @@ async function saveAccount(): Promise<void> {
     return
   }
 
+  const isNewAccount = !editingAccountId.value
+  const wasPasswordReset = isPasswordResetting.value
+  const password = accountForm.password
+  const fullName = accountForm.fullName.trim()
+  const loginNumber = accountForm.loginNumber.trim()
   const saved = await accountAdminStore.save({
     id: editingAccountId.value ?? undefined,
-    loginNumber: accountForm.loginNumber,
-    fullName: accountForm.fullName,
+    loginNumber,
+    fullName,
     role: accountForm.role as AccountRole,
     isActive: true,
-    password: accountForm.password || undefined,
+    password: password || undefined,
   })
 
   if (saved) {
     closeAccountPanel()
+
+    if ((isNewAccount || wasPasswordReset) && password) {
+      await offerCredentialsCopy(fullName, loginNumber, password)
+    }
   }
+}
+
+function startPasswordReset(): void {
+  isPasswordResetting.value = true
+  accountForm.password = ''
+  passwordCopyMessage.value = ''
 }
 
 async function deleteAccount(accountId: string): Promise<void> {
@@ -240,8 +279,8 @@ async function deleteAccount(accountId: string): Promise<void> {
           <input v-model="accountForm.fullName" class="field-control" />
         </label>
 
-        <label class="field-label">
-          {{ editingAccountId ? 'Новый пароль (необязательно)' : 'Пароль' }}
+        <label v-if="!editingAccountId || isPasswordResetting" class="field-label">
+          {{ editingAccountId ? 'Новый пароль' : 'Пароль' }}
           <span class="field-with-action">
             <input
               v-model="accountForm.password"
@@ -249,7 +288,7 @@ async function deleteAccount(accountId: string): Promise<void> {
               type="text"
               autocomplete="new-password"
               minlength="8"
-              :required="!editingAccountId"
+              :required="!editingAccountId || isPasswordResetting"
             />
             <button
               class="password-copy-button"
@@ -267,7 +306,19 @@ async function deleteAccount(accountId: string): Promise<void> {
           </span>
         </label>
 
-        <p v-if="passwordCopyMessage" class="password-message">{{ passwordCopyMessage }}</p>
+        <button
+          v-else
+          class="secondary-button password-reset-button"
+          type="button"
+          :disabled="accountAdminStore.isSaving"
+          @click="startPasswordReset"
+        >
+          Сбросить пароль
+        </button>
+
+        <p v-if="(!editingAccountId || isPasswordResetting) && passwordCopyMessage" class="password-message">
+          {{ passwordCopyMessage }}
+        </p>
 
         <div class="account-form__actions">
           <button class="primary-button" type="submit" :disabled="accountAdminStore.isSaving">
@@ -376,6 +427,16 @@ async function deleteAccount(accountId: string): Promise<void> {
 .field-with-action .secondary-button {
   min-height: 46px;
   white-space: nowrap;
+}
+
+.password-reset-button {
+  min-height: 46px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-weight: 800;
 }
 
 .password-copy-button {

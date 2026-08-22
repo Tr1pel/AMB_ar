@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
+import { localeTag } from '@/shared/i18n'
 import {
   DOCUMENT_TEMPLATE_FIELD_CATALOG,
   type DocumentTemplateFieldCatalogItem,
@@ -770,7 +771,7 @@ function getFieldTypeLabel(type: DocumentTemplateFieldType): string {
 }
 
 function formatDate(timestamp: number): string {
-  return new Intl.DateTimeFormat('ru-RU', {
+  return new Intl.DateTimeFormat(localeTag.value, {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
@@ -778,7 +779,7 @@ function formatDate(timestamp: number): string {
 }
 
 function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat('ru-RU', {
+  return new Intl.DateTimeFormat(localeTag.value, {
     hour: '2-digit',
     minute: '2-digit',
   }).format(timestamp)
@@ -824,8 +825,9 @@ function formatTime(timestamp: number): string {
           </div>
 
           <div>
-            <h2>{{ template.name }}</h2>
-            <p>{{ template.description || 'Описание макета не добавлено.' }}</p>
+            <h2 data-i18n-ignore>{{ template.name }}</h2>
+            <p v-if="template.description" data-i18n-ignore>{{ template.description }}</p>
+            <p v-else>Описание макета не добавлено.</p>
           </div>
 
           <dl class="template-card__meta">
@@ -984,7 +986,7 @@ function formatTime(timestamp: number): string {
             >
               <span>{{ String(index + 1).padStart(2, '0') }}</span>
               <span>
-                <strong>{{ section.title }}</strong>
+                <strong data-i18n-ignore>{{ section.title }}</strong>
                 <small>{{ section.fields.length }} полей</small>
               </span>
             </button>
@@ -1050,11 +1052,11 @@ function formatTime(timestamp: number): string {
               <span class="field-drag-handle" aria-hidden="true">⋮⋮</span>
               <div class="field-builder-card__body">
                 <span>{{ getFieldTypeLabel(field.type) }}</span>
-                <strong>
+                <strong data-i18n-ignore>
                   {{ field.label }}
                   <em v-if="field.required">*</em>
                 </strong>
-                <small v-if="field.helpText">{{ field.helpText }}</small>
+                <small v-if="field.helpText" data-i18n-ignore>{{ field.helpText }}</small>
               </div>
               <div class="inline-icon-actions field-actions">
                 <button
@@ -1092,7 +1094,12 @@ function formatTime(timestamp: number): string {
               <select v-model="fieldCatalogSelection" class="field-control">
                 <option value="">Выберите поле</option>
                 <optgroup v-for="(fields, group) in catalogGroups" :key="group" :label="group">
-                  <option v-for="field in fields" :key="field.dataPath" :value="field.dataPath">
+                  <option
+                    v-for="field in fields"
+                    :key="field.dataPath"
+                    :value="field.dataPath"
+                    data-i18n-ignore
+                  >
                     {{ field.label }}
                   </option>
                 </optgroup>
@@ -1420,7 +1427,7 @@ function formatTime(timestamp: number): string {
 
             <div class="field-preview">
               <span>Предпросмотр</span>
-              <label>
+              <label data-i18n-ignore>
                 {{ selectedTemplateField.label }}
                 <em v-if="selectedTemplateField.required">*</em>
               </label>
@@ -1428,15 +1435,24 @@ function formatTime(timestamp: number): string {
                 v-if="selectedTemplateField.type === 'textarea'"
                 disabled
                 :placeholder="selectedTemplateField.placeholder || 'Введите значение'"
+                :data-i18n-ignore="selectedTemplateField.placeholder ? '' : undefined"
               />
               <select v-else-if="selectedTemplateField.type === 'select'" disabled>
-                <option value="">
-                  {{ selectedTemplateField.placeholder || 'Выберите значение' }}
+                <option
+                  v-if="selectedTemplateField.placeholder"
+                  value=""
+                  data-i18n-ignore
+                >
+                  {{ selectedTemplateField.placeholder }}
+                </option>
+                <option v-else value="">
+                  Выберите значение
                 </option>
                 <option
                   v-for="option in selectedTemplateField.options"
                   :key="option.id"
                   :value="option.label"
+                  data-i18n-ignore
                 >
                   {{ option.label }}
                 </option>
@@ -1460,8 +1476,9 @@ function formatTime(timestamp: number): string {
                       : 'text'
                 "
                 :placeholder="selectedTemplateField.placeholder || 'Введите значение'"
+                :data-i18n-ignore="selectedTemplateField.placeholder ? '' : undefined"
               />
-              <small v-if="selectedTemplateField.helpText">
+              <small v-if="selectedTemplateField.helpText" data-i18n-ignore>
                 {{ selectedTemplateField.helpText }}
               </small>
             </div>
@@ -1486,7 +1503,6 @@ function formatTime(timestamp: number): string {
       <section v-else class="render-spec-editor app-card">
         <div class="render-spec-editor__heading">
           <div>
-            <p class="screen-kicker">Печатный макет</p>
             <h2>Размещение данных в PDF</h2>
             <p>Стиль фиксирован; здесь задаются разделы, поля, таблицы и порядок печати.</p>
           </div>
@@ -1500,11 +1516,6 @@ function formatTime(timestamp: number): string {
             Заголовок документа
             <input v-model="editorTemplate.renderSpec.documentTitle" class="field-control" />
           </label>
-          <div class="field-label render-title-field render-style-summary">
-            Стиль выходного PDF
-            <strong>Единый фирменный шаблон</strong>
-            <small>Оформление фиксировано; состав и подписи полей задаются ниже.</small>
-          </div>
         </div>
 
         <div class="render-section-list">
@@ -1618,6 +1629,7 @@ function formatTime(timestamp: number): string {
                       v-model="renderField.label"
                       class="field-control"
                       :placeholder="getRenderInputField(renderSection, renderField)?.label"
+                      data-i18n-ignore
                     />
                     <small>
                       {{
@@ -2042,27 +2054,8 @@ function formatTime(timestamp: number): string {
 
 .render-document-settings {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 1rem;
-}
-
-.render-style-summary {
-  border: 1px solid #d9e9dc;
-  border-radius: 0.75rem;
-  padding: 0.8rem 0.9rem;
-  color: #17391f;
-  background: #f5faf6;
-  line-height: 1.45;
-}
-
-.render-style-summary strong,
-.render-style-summary small {
-  display: block;
-}
-
-.render-style-summary small {
-  color: #617267;
-  font-size: 0.75rem;
 }
 
 .render-section-card {

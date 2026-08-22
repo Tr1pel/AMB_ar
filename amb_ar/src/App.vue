@@ -3,6 +3,7 @@ import { computed, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
 import ConfirmationDialog from '@/components/ui/ConfirmationDialog.vue'
+import LocaleSwitcher from '@/components/ui/LocaleSwitcher.vue'
 import { useAuthStore } from '@/stores/auth.store'
 import { useSyncStore } from '@/stores/sync.store'
 
@@ -212,6 +213,20 @@ async function signOut(): Promise<void> {
           </span>
           <h1 v-if="topbarTitle && !isReportWorkScreen">{{ topbarTitle }}</h1>
         </div>
+        <div class="topbar-actions">
+          <LocaleSwitcher />
+          <button
+            v-if="authStore.isWorker && !isReportWorkScreen"
+            class="sync-status"
+            :class="{ 'sync-status--offline': !syncStore.isOnline }"
+            type="button"
+            :title="syncStore.lastError ?? syncStore.statusLabel"
+            @click="syncStore.synchronizeNow"
+          >
+            <span aria-hidden="true" />
+            {{ syncStore.statusLabel }}
+          </button>
+        </div>
         <div class="topbar-account">
           <span class="account-avatar">{{ initials }}</span>
           <div>
@@ -219,17 +234,6 @@ async function signOut(): Promise<void> {
             <small>{{ roleLabel }}</small>
           </div>
         </div>
-        <button
-          v-if="authStore.isWorker && !isReportWorkScreen"
-          class="sync-status"
-          :class="{ 'sync-status--offline': !syncStore.isOnline }"
-          type="button"
-          :title="syncStore.lastError ?? syncStore.statusLabel"
-          @click="syncStore.synchronizeNow"
-        >
-          <span aria-hidden="true" />
-          {{ syncStore.statusLabel }}
-        </button>
         <div class="mobile-account">
           <span class="account-avatar">{{ initials }}</span>
           <div class="mobile-account__identity">
@@ -272,6 +276,7 @@ async function signOut(): Promise<void> {
   </div>
 
   <RouterView v-else />
+  <LocaleSwitcher v-if="!showShell" class="public-locale-switcher" />
   <ConfirmationDialog />
 </template>
 
@@ -442,7 +447,7 @@ async function signOut(): Promise<void> {
   z-index: 20;
   top: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 24px;
   min-height: 72px;
@@ -450,6 +455,20 @@ async function signOut(): Promise<void> {
   padding: 10px clamp(18px, 3vw, 36px);
   background: rgba(248, 250, 247, 0.94);
   backdrop-filter: blur(16px);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.public-locale-switcher {
+  position: fixed;
+  z-index: 100;
+  top: 18px;
+  right: 18px;
 }
 
 .workspace-topbar h1 {
@@ -564,10 +583,13 @@ async function signOut(): Promise<void> {
   }
 
   .sync-status {
+    white-space: nowrap;
+  }
+
+  .topbar-actions {
     grid-column: 2;
     grid-row: 2;
-    justify-self: end;
-    white-space: nowrap;
+    flex-wrap: wrap;
   }
 
   .mobile-account {
@@ -662,6 +684,30 @@ async function signOut(): Promise<void> {
   }
 }
 
+:global(html[dir='rtl'] .workspace-sidebar) {
+  inset: 0 0 0 auto;
+}
+
+:global(html[dir='rtl'] .workspace-main) {
+  margin-right: 252px;
+  margin-left: 0;
+}
+
+:global(html[dir='rtl'] .brand img) {
+  object-position: right center;
+}
+
+:global(html[dir='rtl'] .public-locale-switcher) {
+  right: auto;
+  left: 18px;
+}
+
+@media (max-width: 960px) {
+  :global(html[dir='rtl'] .workspace-main) {
+    margin-right: 0;
+  }
+}
+
 @media (min-width: 961px) {
   .workspace-topbar--admin-reports {
     gap: 20px;
@@ -721,6 +767,26 @@ async function signOut(): Promise<void> {
 
   .mobile-account__logout {
     padding-inline: 8px;
+  }
+
+  .topbar-actions {
+    gap: 5px;
+  }
+
+  .topbar-actions .sync-status {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .public-locale-switcher {
+    top: 10px;
+    right: 10px;
+  }
+
+  :global(html[dir='rtl'] .public-locale-switcher) {
+    right: auto;
+    left: 10px;
   }
 }
 

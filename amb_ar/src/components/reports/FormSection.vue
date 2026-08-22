@@ -2,14 +2,23 @@
 defineProps<{
   title: string
   subtitle?: string
+  contentIsTemplateData?: boolean
 }>()
 </script>
 
 <template>
   <section class="form-section">
     <div class="form-section__header">
-      <h2 class="form-section__title">{{ title }}</h2>
-      <p v-if="subtitle" class="form-section__subtitle">{{ subtitle }}</p>
+      <h2 class="form-section__title" :data-i18n-ignore="contentIsTemplateData || undefined">
+        {{ title }}
+      </h2>
+      <p
+        v-if="subtitle"
+        class="form-section__subtitle"
+        :data-i18n-ignore="contentIsTemplateData || undefined"
+      >
+        {{ subtitle }}
+      </p>
     </div>
 
     <slot />

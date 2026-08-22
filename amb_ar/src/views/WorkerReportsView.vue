@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
+import { localeTag } from '@/shared/i18n'
 import { getReportDraftDetails } from '@/shared/repositories/report-draft-repository'
 import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import {
@@ -46,7 +47,7 @@ onMounted(async () => {
 })
 
 function formatReportTime(timestamp: number): string {
-  return new Intl.DateTimeFormat('ru-RU', {
+  return new Intl.DateTimeFormat(localeTag.value, {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
@@ -204,7 +205,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
               <p class="report-card__eyebrow">
                 {{ reportHasProductField(report) && report.productId ? 'Товар' : 'Макет' }}
               </p>
-              <h3>{{ getReportDisplayTitle(report) }}</h3>
+              <h3 data-i18n-ignore>{{ getReportDisplayTitle(report) }}</h3>
             </div>
             <span class="report-status" :class="`report-status--${report.status}`">
               {{ getStatusLabel(report) }}

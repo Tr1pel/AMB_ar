@@ -326,14 +326,16 @@ export async function getReportDraftDetails(
 ): Promise<ReportDraftDetails | null> {
   const localDetails = await getLocalReportDetails(draftId)
 
-  // A report list only caches its summary, without photos and PDF files.  When
-  // online, refresh synchronized reports from the server before opening them so
-  // an administrator always receives the complete submitted report. Pending
-  // drafts stay local-first to preserve the inspector's offline workflow.
+  // A worker draft is always stored together with its local photos and template
+  // snapshot, so opening it must never wait for the server. A report list may
+  // only cache a submitted report summary; refresh those reports when online so
+  // an administrator receives the complete submitted report.
   if (
     localDetails &&
     localDetails.draft._deletedAt === undefined &&
-    (!navigator.onLine || localDetails.draft._syncStatus === 'pending')
+    (localDetails.draft.status === 'draft' ||
+      !navigator.onLine ||
+      localDetails.draft._syncStatus === 'pending')
   ) {
     return localDetails
   }
@@ -350,6 +352,13 @@ export async function getReportDraftDetails(
   } catch (error) {
     if (isNotFound(error)) {
       return null
+    }
+
+    // `navigator.onLine` can remain true when Wi-Fi is connected but the API is
+    // unreachable. Keep cached reports usable instead of turning that condition
+    // into a permanently loading details screen.
+    if (localDetails && localDetails.draft._deletedAt === undefined) {
+      return localDetails
     }
 
     throw error

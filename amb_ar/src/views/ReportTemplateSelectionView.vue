@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import { localeTag } from '@/shared/i18n'
 import { useDocumentTemplateStore } from '@/stores/document-template.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
 
@@ -94,7 +95,7 @@ async function startReport(): Promise<void> {
           <strong>Продолжить отчет</strong>
           <small v-if="reportDraftStore.latestWorkerDraft">
             Изменен
-            {{ new Date(reportDraftStore.latestWorkerDraft.updatedAt).toLocaleString('ru-RU') }}
+            {{ new Date(reportDraftStore.latestWorkerDraft.updatedAt).toLocaleString(localeTag) }}
           </small>
         </span>
       </button>
@@ -122,8 +123,8 @@ async function startReport(): Promise<void> {
       >
         <span class="template-option__marker" aria-hidden="true" />
         <span class="template-option__content">
-          <strong>{{ template.name }}</strong>
-          <small v-if="template.description">{{ template.description }}</small>
+          <strong data-i18n-ignore>{{ template.name }}</strong>
+          <small v-if="template.description" data-i18n-ignore>{{ template.description }}</small>
           <span>
             {{ template.sections.length }} разделов · {{ getFieldCount(template.id) }} полей
           </span>

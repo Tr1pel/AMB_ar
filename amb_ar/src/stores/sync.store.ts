@@ -26,7 +26,7 @@ export const useSyncStore = defineStore('sync', () => {
     if (pendingSubmissionCount.value) {
       return `Ожидают отправки: ${pendingSubmissionCount.value}`
     }
-    return 'Нет отчётов к отправке'
+    return 'В сети'
   })
 
   async function initialize(): Promise<void> {

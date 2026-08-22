@@ -4,6 +4,7 @@ import { onBeforeRouteLeave, useRouter } from 'vue-router'
 
 import FormSection from '@/components/reports/FormSection.vue'
 import PhotoPicker from '@/components/reports/PhotoPicker.vue'
+import { localeTag } from '@/shared/i18n'
 import { createEntityId } from '@/shared/sync/sync-metadata'
 import { getTemplateInputSections } from '@/shared/templates/document-template-schema'
 import { useAuthStore } from '@/stores/auth.store'
@@ -135,6 +136,7 @@ const autosaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 const lastSavedAt = ref<number | null>(null)
 const isAutosaveReady = ref(false)
 const isFormReady = ref(false)
+const formLoadError = ref('')
 const testAutofillNotice = ref('')
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null
 let activeSavePromise: Promise<ReportDraft | null> | null = null
@@ -169,7 +171,7 @@ const autosaveMessage = computed(() => {
   }
 
   return lastSavedAt.value
-    ? `Сохранено в ${new Intl.DateTimeFormat('ru-RU', {
+    ? `Сохранено в ${new Intl.DateTimeFormat(localeTag.value, {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
@@ -409,24 +411,32 @@ watch(
 
 onMounted(async () => {
   isFormReady.value = false
-  await Promise.all([reportTemplateStore.loadOptions(), documentTemplateStore.loadTemplates()])
+  formLoadError.value = ''
 
-  await reportDraftStore.loadReport(props.reportId)
+  try {
+    await Promise.all([reportTemplateStore.loadOptions(), documentTemplateStore.loadTemplates()])
+    await reportDraftStore.loadReport(props.reportId)
 
-  if (!reportDraftStore.selectedReport) {
-    return
+    if (!reportDraftStore.selectedReport) {
+      formLoadError.value =
+        reportDraftStore.errorMessage ?? 'Черновик не найден на этом устройстве.'
+      return
+    }
+
+    if (reportDraftStore.selectedReport.status !== 'draft') {
+      await router.replace({ name: 'report-details', params: { reportId: props.reportId } })
+      return
+    }
+
+    hydrateExistingReport()
+
+    isAutosaveReady.value = true
+    await nextTick()
+    isFormReady.value = true
+  } catch (error) {
+    formLoadError.value =
+      error instanceof Error ? error.message : 'Не удалось открыть сохраненный черновик.'
   }
-
-  if (reportDraftStore.selectedReport.status !== 'draft') {
-    await router.replace({ name: 'report-details', params: { reportId: props.reportId } })
-    return
-  }
-
-  hydrateExistingReport()
-
-  isAutosaveReady.value = true
-  await nextTick()
-  isFormReady.value = true
 })
 
 onUnmounted(() => {
@@ -1301,7 +1311,13 @@ function hydrateExistingReport(): void {
 
 <template>
   <main class="screen-page report-form-page">
-    <section v-if="!isFormReady" class="form-loading app-card" aria-live="polite">
+    <section v-if="formLoadError" class="empty-state app-card" role="alert">
+      <strong>Не удалось открыть черновик</strong>
+      <span>{{ formLoadError }}</span>
+      <button class="secondary-button" type="button" @click="router.back()">Вернуться назад</button>
+    </section>
+
+    <section v-else-if="!isFormReady" class="form-loading app-card" aria-live="polite">
       <span class="form-loading__spinner" aria-hidden="true" />
       <div>
         <strong>Загружаем выбранный макет…</strong>
@@ -1346,18 +1362,27 @@ function hydrateExistingReport(): void {
           @click="setStep(step.id)"
         >
           <span class="report-step__number">{{ index + 1 }}</span>
-          <span class="report-step__text">{{ step.title }}</span>
+          <span
+            class="report-step__text"
+            :data-i18n-ignore="templateSections.length ? '' : undefined"
+          >
+            {{ step.title }}
+          </span>
         </button>
       </nav>
 
       <p class="step-progress">
-        Шаг {{ completedStepCount }} из {{ steps.length }} · {{ activeStep.subtitle }}
+        <span>Шаг {{ completedStepCount }} из {{ steps.length }} ·&nbsp;</span>
+        <span :data-i18n-ignore="templateSections.length ? '' : undefined">
+          {{ activeStep.subtitle }}
+        </span>
       </p>
 
       <FormSection
         v-if="activeTemplateSection"
         :title="activeTemplateSection.title"
         :subtitle="activeTemplateSection.description"
+        content-is-template-data
       >
         <div class="dynamic-field-grid">
           <template v-for="field in activeTemplateSection.fields" :key="field.id">
@@ -1367,8 +1392,9 @@ function hydrateExistingReport(): void {
             >
               <div class="dynamic-special-block__heading">
                 <div>
-                  <h3>{{ field.label }}</h3>
-                  <p>{{ field.helpText || 'Добавьте фотографии для этого поля.' }}</p>
+                  <h3 data-i18n-ignore>{{ field.label }}</h3>
+                  <p v-if="field.helpText" data-i18n-ignore>{{ field.helpText }}</p>
+                  <p v-else>Добавьте фотографии для этого поля.</p>
                 </div>
                 <strong v-if="field.required">Обязательно</strong>
               </div>
@@ -1388,8 +1414,9 @@ function hydrateExistingReport(): void {
             >
               <div class="dynamic-special-block__heading">
                 <div>
-                  <h3>{{ field.label }}</h3>
-                  <p>{{ field.helpText || 'Сформируйте случайные точки контроля по палетам.' }}</p>
+                  <h3 data-i18n-ignore>{{ field.label }}</h3>
+                  <p v-if="field.helpText" data-i18n-ignore>{{ field.helpText }}</p>
+                  <p v-else>Сформируйте случайные точки контроля по палетам.</p>
                 </div>
                 <strong v-if="field.required">Обязательно</strong>
               </div>
@@ -1436,8 +1463,9 @@ function hydrateExistingReport(): void {
             >
               <div class="dynamic-special-block__heading">
                 <div>
-                  <h3>{{ field.label }}</h3>
-                  <p>{{ field.helpText || 'Заполните результаты проверки по пунктам.' }}</p>
+                  <h3 data-i18n-ignore>{{ field.label }}</h3>
+                  <p v-if="field.helpText" data-i18n-ignore>{{ field.helpText }}</p>
+                  <p v-else>Заполните результаты проверки по пунктам.</p>
                 </div>
                 <strong v-if="field.required">Обязательно</strong>
               </div>
@@ -1450,8 +1478,8 @@ function hydrateExistingReport(): void {
                 <div class="mobile-check-row__heading">
                   <span>{{ rowIndex + 1 }}</span>
                   <div>
-                    <strong>{{ row.label }}</strong>
-                    <small v-if="row.helpText">{{ row.helpText }}</small>
+                    <strong data-i18n-ignore>{{ row.label }}</strong>
+                    <small v-if="row.helpText" data-i18n-ignore>{{ row.helpText }}</small>
                   </div>
                 </div>
                 <div class="mobile-check-row__fields">
@@ -1460,7 +1488,7 @@ function hydrateExistingReport(): void {
                     :key="column.id"
                     class="field-label"
                   >
-                    {{ column.label }}
+                    <span data-i18n-ignore>{{ column.label }}</span>
                     <input
                       v-if="column.type === 'checkbox'"
                       class="check-control"
@@ -1488,6 +1516,7 @@ function hydrateExistingReport(): void {
                         v-for="option in column.options ?? []"
                         :key="option.id"
                         :value="option.label"
+                        data-i18n-ignore
                       >
                         {{ option.label }}
                       </option>
@@ -1518,7 +1547,7 @@ function hydrateExistingReport(): void {
               class="field-label dynamic-field"
               :class="{ 'dynamic-field--full': field.width === 'full' }"
             >
-              <span>
+              <span data-i18n-ignore>
                 {{ field.label }}
                 <em v-if="field.required">*</em>
               </span>
@@ -1538,7 +1567,8 @@ function hydrateExistingReport(): void {
                   :checked="getDynamicBooleanValue(field.dataPath)"
                   @change="setDynamicFieldValue(field.dataPath, getEventChecked($event))"
                 />
-                <span>{{ field.placeholder || 'Подтверждаю' }}</span>
+                <span v-if="field.placeholder" data-i18n-ignore>{{ field.placeholder }}</span>
+                <span v-else>Подтверждаю</span>
               </label>
 
               <div
@@ -1557,7 +1587,7 @@ function hydrateExistingReport(): void {
                     :checked="getDynamicFieldValue(field.dataPath) === option.value"
                     @change="setDynamicFieldValue(field.dataPath, option.value)"
                   />
-                  <span>{{ option.label }}</span>
+                  <span data-i18n-ignore>{{ option.label }}</span>
                 </label>
               </div>
 
@@ -1573,13 +1603,17 @@ function hydrateExistingReport(): void {
                 :required="field.required"
                 @change="setDynamicFieldValue(field.dataPath, getEventValue($event))"
               >
-                <option value="" disabled hidden>
-                  {{ field.placeholder || 'Выберите значение' }}
+                <option v-if="field.placeholder" value="" disabled hidden data-i18n-ignore>
+                  {{ field.placeholder }}
+                </option>
+                <option v-else value="" disabled hidden>
+                  Выберите значение
                 </option>
                 <option
                   v-for="option in getDynamicSelectOptions(field)"
                   :key="option.id"
                   :value="option.value"
+                  data-i18n-ignore
                 >
                   {{ option.label }}
                 </option>
@@ -1590,13 +1624,14 @@ function hydrateExistingReport(): void {
                 class="field-control textarea"
                 :value="getDynamicFieldValue(field.dataPath)"
                 :placeholder="field.placeholder"
+                data-i18n-ignore
                 :required="field.required"
                 @input="setDynamicFieldValue(field.dataPath, getEventValue($event))"
               />
 
               <div v-else-if="field.type === 'measurement'" class="measurement-field">
                 <div v-if="field.standardValue" class="measurement-field__standard">
-                  Норма: <strong>{{ field.standardValue }}</strong>
+                  Норма: <strong data-i18n-ignore>{{ field.standardValue }}</strong>
                 </div>
                 <span class="input-with-unit">
                   <input
@@ -1605,6 +1640,7 @@ function hydrateExistingReport(): void {
                     inputmode="decimal"
                     :value="getDynamicFieldValue(field.dataPath)"
                     :placeholder="field.placeholder"
+                    data-i18n-ignore
                     :required="field.required"
                     @input="setDynamicFieldValue(field.dataPath, getEventValue($event))"
                   />
@@ -1618,11 +1654,12 @@ function hydrateExistingReport(): void {
                 :type="getDynamicInputType(field)"
                 :value="getDynamicFieldValue(field.dataPath)"
                 :placeholder="field.placeholder"
+                data-i18n-ignore
                 :required="field.required"
                 @input="setDynamicFieldValue(field.dataPath, getEventValue($event))"
               />
 
-              <small v-if="field.helpText" class="dynamic-field__help">
+              <small v-if="field.helpText" class="dynamic-field__help" data-i18n-ignore>
                 {{ field.helpText }}
               </small>
             </section>
