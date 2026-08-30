@@ -115,10 +115,7 @@ export class DocumentTemplateRepository {
     )
   }
 
-  async save(
-    input: SaveDocumentTemplateInput,
-    adminAccountId: string,
-  ): Promise<DocumentTemplate> {
+  async save(input: SaveDocumentTemplateInput, adminAccountId: string): Promise<DocumentTemplate> {
     const existingTemplate = await this.getById(input.id)
     const name = input.name.trim()
 
@@ -238,10 +235,7 @@ export class DocumentTemplateRepository {
   }
 
   async softDelete(templateId: string, adminAccountId: string): Promise<void> {
-    await apiDelete(
-      `/api/document-templates/${encodeURIComponent(templateId)}`,
-      adminAccountId,
-    )
+    await apiDelete(`/api/document-templates/${encodeURIComponent(templateId)}`, adminAccountId)
   }
 }
 

@@ -205,7 +205,10 @@ async function signOut(): Promise<void> {
     <section class="workspace-main">
       <header
         class="workspace-topbar"
-        :class="{ 'workspace-topbar--admin-reports': hasAdminGreenHeader }"
+        :class="{
+          'workspace-topbar--admin-reports': hasAdminGreenHeader,
+          'workspace-topbar--compact': isReportWorkScreen,
+        }"
       >
         <div class="topbar-heading">
           <span class="mobile-brand">
@@ -590,6 +593,14 @@ async function signOut(): Promise<void> {
     grid-column: 2;
     grid-row: 2;
     flex-wrap: wrap;
+  }
+
+  .workspace-topbar--compact .topbar-actions {
+    grid-row: 1;
+  }
+
+  .workspace-topbar--compact .mobile-account {
+    display: none;
   }
 
   .mobile-account {

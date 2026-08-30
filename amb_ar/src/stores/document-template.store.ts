@@ -68,15 +68,11 @@ export const useDocumentTemplateStore = defineStore('documentTemplate', () => {
   }
 
   async function createEmpty(): Promise<DocumentTemplate | null> {
-    return runMutation((adminAccountId) =>
-      documentTemplateRepository.createEmpty(adminAccountId),
-    )
+    return runMutation((adminAccountId) => documentTemplateRepository.createEmpty(adminAccountId))
   }
 
   async function save(input: SaveDocumentTemplateInput): Promise<DocumentTemplate | null> {
-    return runMutation((adminAccountId) =>
-      documentTemplateRepository.save(input, adminAccountId),
-    )
+    return runMutation((adminAccountId) => documentTemplateRepository.save(input, adminAccountId))
   }
 
   async function edit(templateId: string): Promise<DocumentTemplate | null> {

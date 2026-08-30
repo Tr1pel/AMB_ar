@@ -358,7 +358,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
 .report-toolbar {
   position: sticky;
   z-index: 5;
-  top: 10px;
+  top: calc(var(--workspace-topbar-offset, 0px) + 10px);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -520,7 +520,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
 
 @media (max-width: 620px) {
   .report-toolbar {
-    top: 6px;
+    top: calc(var(--workspace-topbar-offset, 0px) + 6px);
   }
 
   .report-toolbar .primary-button {

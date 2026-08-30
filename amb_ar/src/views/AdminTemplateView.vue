@@ -1438,16 +1438,10 @@ function formatTime(timestamp: number): string {
                 :data-i18n-ignore="selectedTemplateField.placeholder ? '' : undefined"
               />
               <select v-else-if="selectedTemplateField.type === 'select'" disabled>
-                <option
-                  v-if="selectedTemplateField.placeholder"
-                  value=""
-                  data-i18n-ignore
-                >
+                <option v-if="selectedTemplateField.placeholder" value="" data-i18n-ignore>
                   {{ selectedTemplateField.placeholder }}
                 </option>
-                <option v-else value="">
-                  Выберите значение
-                </option>
+                <option v-else value="">Выберите значение</option>
                 <option
                   v-for="option in selectedTemplateField.options"
                   :key="option.id"

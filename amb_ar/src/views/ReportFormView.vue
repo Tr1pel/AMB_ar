@@ -2215,15 +2215,22 @@ function hydrateExistingReport(): void {
 }
 
 .input-with-unit {
-  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  direction: ltr;
+}
+
+.input-with-unit > .field-control {
+  min-width: 0;
+  flex: 1;
+  direction: ltr;
+  text-align: left;
 }
 
 .input-with-unit > small {
-  position: absolute;
-  right: 12px;
-  top: 50%;
+  flex: none;
   color: var(--color-text-muted);
-  transform: translateY(-50%);
 }
 
 .measurement-field__standard {
