@@ -22,6 +22,12 @@ export async function generateTemplateReportPdf({
   binaryAdapter = (value) => value,
 }) {
   const renderSpec = getTemplateRenderSpec(template)
+  const templateTitle = getMultilingualTemplateText(template, 'name')
+  const templateDescription = getMultilingualTemplateText(template, 'description')
+  const documentTitle =
+    renderSpec.documentTitle && renderSpec.documentTitle !== template.name
+      ? renderSpec.documentTitle
+      : templateTitle || renderSpec.documentTitle
   const preparedLogo = logo ? binaryAdapter(logo) : null
 
   const document = new PDFDocument({
@@ -29,7 +35,7 @@ export async function generateTemplateReportPdf({
     bufferPages: true,
     compress: true,
     info: {
-      Title: renderSpec.documentTitle || template.name || 'Отчёт о контроле качества',
+      Title: documentTitle || 'Отчёт о контроле качества',
       Author: report.inspectorName || 'АМБАР',
       Subject: report.productName || report.mainInfo?.productName || '',
       Creator: 'АМБАР',
@@ -55,9 +61,9 @@ export async function generateTemplateReportPdf({
   const inputSections = getTemplateInputSections(template)
   const inputSectionById = new Map(inputSections.map((section) => [section.id, section]))
   const photoFields = []
-  const templateSubtitle = String(template.description || template.name || '').trim()
+  const templateSubtitle = templateDescription || templateTitle
 
-  beginPage(state, report, renderSpec.documentTitle, templateSubtitle, preparedLogo)
+  beginPage(state, report, documentTitle, templateSubtitle, preparedLogo)
 
   for (const renderSection of renderSpec.sections) {
     if (renderSection.hidden) {
@@ -93,25 +99,27 @@ export async function generateTemplateReportPdf({
     }
 
     if (state.hasContent && renderSection.pageBreakBefore) {
-      beginPage(state, report, renderSpec.documentTitle, templateSubtitle, preparedLogo)
+      beginPage(state, report, documentTitle, templateSubtitle, preparedLogo)
     } else if (state.hasContent) {
       state.y += 10
     }
 
-    ensureSpaceForSection(state, report, renderSpec.documentTitle, templateSubtitle, preparedLogo)
-    drawSectionHeading(state, renderSection.title || inputSection.title)
+    ensureSpaceForSection(state, report, documentTitle, templateSubtitle, preparedLogo)
+    const sectionTitle = getMultilingualSectionText(inputSection, 'title') || renderSection.title
+    drawSectionHeading(state, sectionTitle)
 
-    if (renderSection.showDescription && inputSection.description) {
-      drawDescription(state, inputSection.description)
+    const sectionDescription = getMultilingualSectionText(inputSection, 'description')
+    if (renderSection.showDescription && sectionDescription) {
+      drawDescription(state, sectionDescription)
     }
 
     for (const group of groupFieldBlocks(blocks, renderSection.columns)) {
       const pageContext = {
         report,
-        documentTitle: renderSpec.documentTitle,
+        documentTitle,
         templateName: templateSubtitle,
         logo: preparedLogo,
-        sectionTitle: renderSection.title || inputSection.title,
+        sectionTitle,
       }
 
       if (group.blocks[0]?.kind === 'table') {
@@ -123,11 +131,8 @@ export async function generateTemplateReportPdf({
       const groupHeight = measureGroupHeight(state, group)
 
       if (state.y + groupHeight > CONTENT_BOTTOM) {
-        beginPage(state, report, renderSpec.documentTitle, templateSubtitle, preparedLogo)
-        drawSectionHeading(
-          state,
-          `${renderSection.title || inputSection.title} · продолжение`,
-        )
+        beginPage(state, report, documentTitle, templateSubtitle, preparedLogo)
+        drawSectionHeading(state, `${sectionTitle} · продолжение`)
       }
 
       drawFieldGroup(state, group)
@@ -152,11 +157,11 @@ export async function generateTemplateReportPdf({
 
     for (const [photoPageIndex, pagePhotos] of chunk(fieldPhotos, 6).entries()) {
       if (state.hasDocumentContent || photoPageIndex > 0) {
-        beginPage(state, report, renderSpec.documentTitle, templateSubtitle, preparedLogo)
+        beginPage(state, report, documentTitle, templateSubtitle, preparedLogo)
       }
       drawSectionHeading(
         state,
-        `${entry.spec.label?.trim() || entry.field.label}${photoPageIndex ? ' · продолжение' : ''}`,
+        `${getPdfFieldLabel(entry.field, entry.spec)}${photoPageIndex ? ' · продолжение' : ''}`,
       )
       drawPhotoContent(state, report, pagePhotos, binaryAdapter)
       state.hasContent = true
@@ -173,7 +178,7 @@ export async function generateTemplateReportPdf({
 }
 
 function createFieldBlocks(report, field, spec, section) {
-  const label = spec.label?.trim() || field.label
+  const label = getPdfFieldLabel(field, spec)
   const width = section.columns === 1 ? 'full' : spec.width
 
   if (field.type !== 'table') {
@@ -194,11 +199,7 @@ function createFieldBlocks(report, field, spec, section) {
     values: columns.map((column) => {
       const cellValue = table[row.id]?.[column.id]
       const formatted =
-        typeof cellValue === 'boolean'
-          ? cellValue
-            ? '☒'
-            : '☐'
-          : String(cellValue ?? '').trim()
+        typeof cellValue === 'boolean' ? (cellValue ? '☒' : '☐') : String(cellValue ?? '').trim()
 
       return formatted ? `${formatted}${column.unit ? ` ${column.unit}` : ''}` : ''
     }),
@@ -210,6 +211,33 @@ function createFieldBlocks(report, field, spec, section) {
   }
 
   return [{ kind: 'table', label, columns, rows, width: 'full' }]
+}
+
+export function getPdfFieldLabel(field, spec) {
+  const translations = field?.translations
+  const localizedLabels = ['ru', 'en', 'fa']
+    .map((locale) => String(translations?.[locale]?.label ?? '').trim())
+    .filter(Boolean)
+
+  if (localizedLabels.length) {
+    const uniqueLocalizedLabels = [...new Set(localizedLabels)]
+    const multilingualLabel = uniqueLocalizedLabels.join(' / ')
+    const renderLabel = String(spec?.label ?? '').trim()
+    const legacyLabel = String(field?.label ?? '').trim()
+
+    if (
+      renderLabel &&
+      renderLabel !== legacyLabel &&
+      renderLabel !== multilingualLabel &&
+      !uniqueLocalizedLabels.every((label) => renderLabel.includes(label))
+    ) {
+      return `${renderLabel} / ${multilingualLabel}`
+    }
+
+    return multilingualLabel
+  }
+
+  return String(spec?.label ?? '').trim() || String(field?.label ?? '').trim()
 }
 
 function groupFieldBlocks(blocks, columns) {
@@ -285,8 +313,25 @@ function drawFieldGroup(state, group) {
     const labelWidth = 202
 
     fillRect(document, PAGE_MARGIN, state.y, labelWidth, height, DARK_GREEN)
-    fillRect(document, PAGE_MARGIN + labelWidth, state.y, CONTENT_WIDTH - labelWidth, height, rowFill)
-    drawCellText(document, block.label, PAGE_MARGIN + 6, state.y, labelWidth - 12, height, 8.5, '#ffffff', true)
+    fillRect(
+      document,
+      PAGE_MARGIN + labelWidth,
+      state.y,
+      CONTENT_WIDTH - labelWidth,
+      height,
+      rowFill,
+    )
+    drawCellText(
+      document,
+      block.label,
+      PAGE_MARGIN + 6,
+      state.y,
+      labelWidth - 12,
+      height,
+      8.5,
+      '#ffffff',
+      true,
+    )
     drawCellText(
       document,
       block.value,
@@ -310,7 +355,17 @@ function drawFieldGroup(state, group) {
     const x = PAGE_MARGIN + index * width
     fillRect(document, x, state.y, labelWidth, height, DARK_GREEN)
     fillRect(document, x + labelWidth, state.y, width - labelWidth, height, rowFill)
-    drawCellText(document, block.label, x + 5, state.y, labelWidth - 10, height, 7.5, '#ffffff', true)
+    drawCellText(
+      document,
+      block.label,
+      x + 5,
+      state.y,
+      labelWidth - 10,
+      height,
+      7.5,
+      '#ffffff',
+      true,
+    )
     drawCellText(
       document,
       block.value,
@@ -332,10 +387,7 @@ function measureTableBlockHeight(document, block) {
   return (
     19 +
     geometry.headerHeight +
-    block.rows.reduce(
-      (total, row) => total + measureTableRowHeight(document, row, geometry),
-      0,
-    )
+    block.rows.reduce((total, row) => total + measureTableRowHeight(document, row, geometry), 0)
   )
 }
 
@@ -417,7 +469,9 @@ function drawTableBlock(state, block, pageContext) {
 
 function getTableGeometry(block) {
   const valueColumnCount = Math.max(1, block.columns.length)
-  const rowLabelWidth = block.columns.length ? Math.min(200, Math.max(150, CONTENT_WIDTH * 0.34)) : CONTENT_WIDTH
+  const rowLabelWidth = block.columns.length
+    ? Math.min(200, Math.max(150, CONTENT_WIDTH * 0.34))
+    : CONTENT_WIDTH
   const valueColumnWidth = block.columns.length
     ? (CONTENT_WIDTH - rowLabelWidth) / valueColumnCount
     : 0
@@ -435,8 +489,9 @@ function measureTableRowHeight(document, row, geometry) {
     52,
     Math.max(
       27,
-      ...values.map((value, index) =>
-        measureText(document, value || '—', geometry.widths[index] - 10, 7.3, index === 0) + 9,
+      ...values.map(
+        (value, index) =>
+          measureText(document, value || '—', geometry.widths[index] - 10, 7.3, index === 0) + 9,
       ),
     ),
   )
@@ -643,11 +698,20 @@ function drawPhotoContent(state, report, photos, binaryAdapter) {
       valign: 'center',
     })
     strokeRect(document, cellX, cellY, cellWidth, imageHeight)
-    drawText(document, photo.caption?.trim() || '', cellX + 4, cellY + imageHeight + 3, 7.3, TEXT_COLOR, true, {
-      width: cellWidth - 8,
-      height: 12,
-      ellipsis: true,
-    })
+    drawText(
+      document,
+      photo.caption?.trim() || '',
+      cellX + 4,
+      cellY + imageHeight + 3,
+      7.3,
+      TEXT_COLOR,
+      true,
+      {
+        width: cellWidth - 8,
+        height: 12,
+        ellipsis: true,
+      },
+    )
     drawText(
       document,
       `${formatDate(photo.createdAt)} · ${report.inspectorName || '—'}`,
@@ -672,15 +736,11 @@ function formatFieldValue(report, field, display) {
 
   if (display === 'checkmark' || field.type === 'checkbox' || field.type === 'passFail') {
     if (value === true || value === 'true' || value === 'pass') {
-      return field.type === 'passFail'
-        ? '☒ Соответствует  ☐ Не соответствует'
-        : '☒ Да  ☐ Нет'
+      return field.type === 'passFail' ? '☒ Соответствует  ☐ Не соответствует' : '☒ Да  ☐ Нет'
     }
 
     if (value === false || value === 'false' || value === 'fail') {
-      return field.type === 'passFail'
-        ? '☐ Соответствует  ☒ Не соответствует'
-        : '☐ Да  ☒ Нет'
+      return field.type === 'passFail' ? '☐ Соответствует  ☒ Не соответствует' : '☐ Да  ☒ Нет'
     }
   }
 
@@ -783,12 +843,19 @@ function fillRect(document, x, y, width, height, color) {
 }
 
 function strokeRect(document, x, y, width, height) {
-  document.save().lineWidth(0.7).strokeColor(GRID_COLOR).rect(x, y, width, height).stroke().restore()
+  document
+    .save()
+    .lineWidth(0.7)
+    .strokeColor(GRID_COLOR)
+    .rect(x, y, width, height)
+    .stroke()
+    .restore()
 }
 
 function decodeSupportedPhoto(photo) {
   const binary = decodeBase64(photo.blobBase64 ?? '')
-  const isJpeg = binary.length >= 3 && binary[0] === 0xff && binary[1] === 0xd8 && binary[2] === 0xff
+  const isJpeg =
+    binary.length >= 3 && binary[0] === 0xff && binary[1] === 0xd8 && binary[2] === 0xff
   const isPng =
     binary.length >= 8 &&
     [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every(
@@ -796,9 +863,7 @@ function decodeSupportedPhoto(photo) {
     )
 
   if (!isJpeg && !isPng) {
-    throw new Error(
-      `Фотография «${photo.fileName || photo.id}» должна быть в формате JPEG или PNG`,
-    )
+    throw new Error(`Фотография «${photo.fileName || photo.id}» должна быть в формате JPEG или PNG`)
   }
 
   return binary
@@ -829,6 +894,22 @@ function concatenateBytes(chunks) {
 
 function getTemplateInputSections(template) {
   return template.inputSchema?.steps ?? template.sections ?? []
+}
+
+function getMultilingualTemplateText(template, key) {
+  return getMultilingualText(template?.translations, key, template?.[key])
+}
+
+function getMultilingualSectionText(section, key) {
+  return getMultilingualText(section?.translations, key, section?.[key])
+}
+
+function getMultilingualText(translations, key, fallback = '') {
+  const values = ['ru', 'en', 'fa']
+    .map((locale) => String(translations?.[locale]?.[key] ?? '').trim())
+    .filter(Boolean)
+
+  return values.length ? [...new Set(values)].join(' / ') : String(fallback ?? '').trim()
 }
 
 function getTemplateRenderSpec(template) {
@@ -885,7 +966,9 @@ function formatDate(value) {
   }
 
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('ru-RU').format(date)
+  return Number.isNaN(date.getTime())
+    ? String(value)
+    : new Intl.DateTimeFormat('ru-RU').format(date)
 }
 
 function chunk(items, size, includeEmpty = false) {

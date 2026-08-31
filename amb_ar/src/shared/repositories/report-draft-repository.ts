@@ -172,7 +172,8 @@ export async function createReportDraft(
   const hasProductField = templateHasProductField(reportTemplate)
   const productId = hasProductField ? input.productId : ''
   const selectedProductName = input.mainInfo.productName.trim() || getProductLabel(productId)
-  const productName = productId && selectedProductName ? selectedProductName : reportTemplate?.name ?? ''
+  const productName =
+    productId && selectedProductName ? selectedProductName : (reportTemplate?.name ?? '')
   const photos = await Promise.all(
     input.photos.map<Promise<ProductPhoto>>(async (photoInput) => {
       const existingPhoto = existingPhotosById.get(photoInput.id ?? '')
@@ -209,6 +210,8 @@ export async function createReportDraft(
       ? {
           templateId: selectedTemplate.id,
           name: selectedTemplate.name,
+          description: selectedTemplate.description,
+          translations: cloneTemplateData(selectedTemplate.translations),
           inputSchema: cloneTemplateData(selectedTemplate.inputSchema),
           renderSpec: cloneTemplateData(selectedTemplate.renderSpec),
           sections: cloneTemplateData(selectedTemplate.sections),
@@ -476,10 +479,7 @@ export async function softDeleteReportDraft(draftId: string, accountId: string):
   triggerSynchronization()
 }
 
-export async function archiveReportDraft(
-  reportId: string,
-  adminAccountId: string,
-): Promise<void> {
+export async function archiveReportDraft(reportId: string, adminAccountId: string): Promise<void> {
   await apiDelete(`/api/reports/${encodeURIComponent(reportId)}`, adminAccountId)
 }
 
@@ -517,18 +517,20 @@ async function cacheWorkerServerReportSummaries(
 ): Promise<ReportDraft[]> {
   const reportsNeedingDetails: ReportDraft[] = []
 
-  await Promise.all(serverReports.map(async (report) => {
-    const localReport = await offlineDatabase.reports.get(report.id)
+  await Promise.all(
+    serverReports.map(async (report) => {
+      const localReport = await offlineDatabase.reports.get(report.id)
 
-    if (localReport?._syncStatus === 'pending') {
-      return
-    }
+      if (localReport?._syncStatus === 'pending') {
+        return
+      }
 
-    if (!localReport || report.updatedAt > localReport.updatedAt) {
-      await offlineDatabase.reports.put(report)
-      reportsNeedingDetails.push(report)
-    }
-  }))
+      if (!localReport || report.updatedAt > localReport.updatedAt) {
+        await offlineDatabase.reports.put(report)
+        reportsNeedingDetails.push(report)
+      }
+    }),
+  )
 
   return reportsNeedingDetails
 }
@@ -537,24 +539,26 @@ async function cacheWorkerServerReportDetails(
   serverReports: ReportDraft[],
   workerAccountId: string,
 ): Promise<void> {
-  await Promise.all(serverReports.map(async (report) => {
-    const localReport = await offlineDatabase.reports.get(report.id)
+  await Promise.all(
+    serverReports.map(async (report) => {
+      const localReport = await offlineDatabase.reports.get(report.id)
 
-    if (localReport?._syncStatus === 'pending') {
-      return
-    }
+      if (localReport?._syncStatus === 'pending') {
+        return
+      }
 
-    try {
-      const details = await apiGet<ServerReportDetails>(
-        `/api/reports/${encodeURIComponent(report.id)}`,
-        workerAccountId,
-      )
-      const deserialized = deserializeDetails(details)
-      await putReportDetails(deserialized.draft, deserialized.photos, deserialized.documents)
-    } catch {
-      await offlineDatabase.reports.put(report)
-    }
-  }))
+      try {
+        const details = await apiGet<ServerReportDetails>(
+          `/api/reports/${encodeURIComponent(report.id)}`,
+          workerAccountId,
+        )
+        const deserialized = deserializeDetails(details)
+        await putReportDetails(deserialized.draft, deserialized.photos, deserialized.documents)
+      } catch {
+        await offlineDatabase.reports.put(report)
+      }
+    }),
+  )
 }
 
 function deserializeDetails(details: ServerReportDetails): ReportDraftDetails {

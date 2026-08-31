@@ -4,7 +4,10 @@ import test from 'node:test'
 
 import PDFDocument from 'pdfkit/js/pdfkit.standalone.js'
 
-import { generateTemplateReportPdf } from '../src/shared/reports/branded-report-pdf-core.mjs'
+import {
+  generateTemplateReportPdf,
+  getPdfFieldLabel,
+} from '../src/shared/reports/branded-report-pdf-core.mjs'
 
 test('the browser PDFKit bundle generates the shared report layout', async () => {
   const [regularFont, boldFont, logo] = await Promise.all([
@@ -26,6 +29,11 @@ test('the browser PDFKit bundle generates the shared report layout', async () =>
         required: true,
         placeholder: '',
         helpText: '',
+        translations: {
+          ru: { label: 'Продукт', placeholder: 'Введите продукт', helpText: 'Название товара' },
+          en: { label: 'Product', placeholder: 'Enter product', helpText: 'Product name' },
+          fa: { label: 'محصول', placeholder: 'محصول را وارد کنید', helpText: 'نام محصول' },
+        },
         width: 'full',
         sortOrder: 1,
         options: [],
@@ -85,6 +93,10 @@ test('the browser PDFKit bundle generates the shared report layout', async () =>
 
   assert.ok(bytes.byteLength > 1_000)
   assert.equal(new TextDecoder().decode(bytes.subarray(0, 5)), '%PDF-')
+  assert.equal(
+    getPdfFieldLabel(section.fields[0], template.renderSpec.sections[0].fields[0]),
+    'Продукт / Product / محصول',
+  )
 })
 
 function toArrayBuffer(value) {

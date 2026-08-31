@@ -78,6 +78,9 @@ export function createServerDatabase(databasePath, options = {}) {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT NOT NULL,
+      translations_json TEXT CHECK (
+        translations_json IS NULL OR json_valid(translations_json)
+      ),
       status TEXT NOT NULL CHECK (status IN ('draft', 'active', 'archived')),
       sections_json TEXT NOT NULL CHECK (json_valid(sections_json)),
       input_schema_json TEXT CHECK (
@@ -348,6 +351,10 @@ function migrateDocumentTemplateSchemas(database) {
   if (!columns.some((column) => column.name === 'render_spec_json')) {
     database.exec('ALTER TABLE document_templates ADD COLUMN render_spec_json TEXT')
   }
+
+  if (!columns.some((column) => column.name === 'translations_json')) {
+    database.exec('ALTER TABLE document_templates ADD COLUMN translations_json TEXT')
+  }
 }
 
 function migrateProductPhotoTemplateField(database) {
@@ -440,14 +447,15 @@ function prepareStatements(database) {
       select: database.prepare('SELECT * FROM document_templates'),
       upsert: database.prepare(`
         INSERT INTO document_templates (
-          id, name, description, status, sections_json, input_schema_json, render_spec_json,
+          id, name, description, translations_json, status, sections_json, input_schema_json, render_spec_json,
           created_by_account_id, created_at,
           updated_at, published_at, deleted_at, last_modified, local_version, server_timestamp,
           server_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
           name = excluded.name,
           description = excluded.description,
+          translations_json = excluded.translations_json,
           status = excluded.status,
           sections_json = excluded.sections_json,
           input_schema_json = excluded.input_schema_json,
@@ -676,9 +684,7 @@ function purgeExpiredArchivedReports(database, nowTimestamp) {
   database.exec('BEGIN IMMEDIATE')
 
   try {
-    const deleteDocuments = database.prepare(
-      'DELETE FROM generated_documents WHERE draft_id = ?',
-    )
+    const deleteDocuments = database.prepare('DELETE FROM generated_documents WHERE draft_id = ?')
     const deletePhotos = database.prepare('DELETE FROM product_photos WHERE draft_id = ?')
     const deleteReport = database.prepare(
       "DELETE FROM report_drafts WHERE id = ? AND status = 'archived'",
@@ -816,6 +822,7 @@ function documentTemplateToParameters(entity) {
     entity.id,
     entity.name,
     entity.description,
+    jsonOrNull(entity.translations),
     entity.status,
     JSON.stringify(sections),
     JSON.stringify(entity.inputSchema ?? { version: 1, steps: sections }),
@@ -939,6 +946,7 @@ function documentTemplateFromRow(row) {
     id: row.id,
     name: row.name,
     description: row.description,
+    ...(row.translations_json ? { translations: JSON.parse(row.translations_json) } : {}),
     status: row.status,
     inputSchema,
     renderSpec,
@@ -987,9 +995,7 @@ function reportDraftFromRow(row) {
     id: row.id,
     ...(row.report_number === null ? {} : { reportNumber: row.report_number }),
     status: row.status,
-    ...(row.archived_from_status === null
-      ? {}
-      : { archivedFromStatus: row.archived_from_status }),
+    ...(row.archived_from_status === null ? {} : { archivedFromStatus: row.archived_from_status }),
     ...(row.template_id === null ? {} : { templateId: row.template_id }),
     ...(row.template_snapshot_json === null
       ? {}

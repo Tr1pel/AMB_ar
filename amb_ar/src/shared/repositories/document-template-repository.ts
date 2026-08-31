@@ -10,17 +10,25 @@ import {
   getTemplateInputSections,
   syncRenderSpec,
 } from '@/shared/templates/document-template-schema'
+import { cloneDocumentTemplateField } from '@/shared/templates/document-template-field-clone'
+import {
+  synchronizeLegacyFieldText,
+  synchronizeLegacySectionText,
+  synchronizeLegacyTemplateText,
+} from '@/shared/templates/document-template-localization'
 import type {
   DocumentInputSchema,
   DocumentRenderSpec,
   DocumentTemplate,
   DocumentTemplateSection,
+  DocumentTemplateTranslations,
 } from '@/types/report'
 
 export interface SaveDocumentTemplateInput {
   id: string
   name: string
   description: string
+  translations?: DocumentTemplateTranslations
   inputSchema: DocumentInputSchema
   renderSpec: DocumentRenderSpec
 }
@@ -98,6 +106,11 @@ export class DocumentTemplateRepository {
       id: createEntityId('document-template'),
       name: 'Новый макет',
       description: '',
+      translations: {
+        ru: { name: 'Новый макет', description: '' },
+        en: { name: 'New template', description: '' },
+        fa: { name: 'قالب جدید', description: '' },
+      },
       status: 'draft',
       inputSchema: createInputSchema(sections),
       renderSpec: createDefaultRenderSpec(sections, 'Новый макет'),
@@ -117,7 +130,13 @@ export class DocumentTemplateRepository {
 
   async save(input: SaveDocumentTemplateInput, adminAccountId: string): Promise<DocumentTemplate> {
     const existingTemplate = await this.getById(input.id)
-    const name = input.name.trim()
+    const editableTemplate = {
+      name: input.name,
+      description: input.description,
+      translations: input.translations ? cloneTemplateTranslations(input.translations) : undefined,
+    }
+    synchronizeLegacyTemplateText(editableTemplate)
+    const name = editableTemplate.name.trim()
 
     if (!existingTemplate) {
       throw new Error('Макет не найден')
@@ -138,7 +157,8 @@ export class DocumentTemplateRepository {
       {
         ...existingTemplate,
         name,
-        description: input.description.trim(),
+        description: editableTemplate.description.trim(),
+        translations: editableTemplate.translations,
         inputSchema: createInputSchema(sections),
         renderSpec,
         sections,
@@ -240,24 +260,74 @@ export class DocumentTemplateRepository {
 }
 
 function normalizeSections(sections: DocumentTemplateSection[]): DocumentTemplateSection[] {
-  return sections.map((section, sectionIndex) => ({
+  return sections.map((sourceSection, sectionIndex) => {
+    const section = cloneDocumentTemplateSection(sourceSection)
+    synchronizeLegacySectionText(section)
+
+    return {
+      ...section,
+      title: section.title.trim() || `Раздел ${sectionIndex + 1}`,
+      description: section.description.trim(),
+      sortOrder: sectionIndex + 1,
+      fields: section.fields.map((sourceField, fieldIndex) => {
+        const field = synchronizeLegacyFieldText(cloneDocumentTemplateField(sourceField))
+        const fallbackLabel = field.label.trim() || 'Поле без названия'
+
+        return {
+          ...field,
+          label: fallbackLabel,
+          placeholder: field.placeholder.trim(),
+          helpText: field.helpText.trim(),
+          translations: {
+            ru: normalizeFieldTranslation(field.translations!.ru),
+            en: normalizeFieldTranslation(field.translations!.en),
+            fa: normalizeFieldTranslation(field.translations!.fa),
+          },
+          sortOrder: fieldIndex + 1,
+          options: (field.options ?? []).map((option, optionIndex) => ({
+            id: option.id,
+            label: option.label.trim() || `Вариант ${optionIndex + 1}`,
+            sortOrder: optionIndex + 1,
+          })),
+        }
+      }),
+    }
+  })
+}
+
+function cloneDocumentTemplateSection(section: DocumentTemplateSection): DocumentTemplateSection {
+  return {
     ...section,
-    title: section.title.trim() || `Раздел ${sectionIndex + 1}`,
-    description: section.description.trim(),
-    sortOrder: sectionIndex + 1,
-    fields: section.fields.map((field, fieldIndex) => ({
-      ...field,
-      label: field.label.trim() || 'Поле без названия',
-      placeholder: field.placeholder.trim(),
-      helpText: field.helpText.trim(),
-      sortOrder: fieldIndex + 1,
-      options: (field.options ?? []).map((option, optionIndex) => ({
-        id: option.id,
-        label: option.label.trim() || `Вариант ${optionIndex + 1}`,
-        sortOrder: optionIndex + 1,
-      })),
-    })),
-  }))
+    translations: section.translations
+      ? {
+          ru: { ...section.translations.ru },
+          en: { ...section.translations.en },
+          fa: { ...section.translations.fa },
+        }
+      : undefined,
+  }
+}
+
+function cloneTemplateTranslations(
+  translations: DocumentTemplateTranslations,
+): DocumentTemplateTranslations {
+  return {
+    ru: { ...translations.ru },
+    en: { ...translations.en },
+    fa: { ...translations.fa },
+  }
+}
+
+function normalizeFieldTranslation(translation: {
+  label: string
+  placeholder: string
+  helpText: string
+}) {
+  return {
+    label: translation.label.trim(),
+    placeholder: translation.placeholder.trim(),
+    helpText: translation.helpText.trim(),
+  }
 }
 
 function regenerateNodeIds(sections: DocumentTemplateSection[]): DocumentTemplateSection[] {

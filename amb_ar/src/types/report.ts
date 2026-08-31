@@ -80,6 +80,39 @@ export type DocumentTemplateFieldType =
 
 export type DocumentTemplateFieldWidth = 'half' | 'full'
 
+export type DocumentTemplateLocale = 'ru' | 'en' | 'fa'
+
+export interface DocumentTemplateTranslation {
+  name: string
+  description: string
+}
+
+export type DocumentTemplateTranslations = Record<
+  DocumentTemplateLocale,
+  DocumentTemplateTranslation
+>
+
+export interface DocumentTemplateSectionTranslation {
+  title: string
+  description: string
+}
+
+export type DocumentTemplateSectionTranslations = Record<
+  DocumentTemplateLocale,
+  DocumentTemplateSectionTranslation
+>
+
+export interface DocumentTemplateFieldTranslation {
+  label: string
+  placeholder: string
+  helpText: string
+}
+
+export type DocumentTemplateFieldTranslations = Record<
+  DocumentTemplateLocale,
+  DocumentTemplateFieldTranslation
+>
+
 export interface DocumentTemplateFieldOption {
   id: string
   label: string
@@ -118,6 +151,7 @@ export interface DocumentTemplateField {
   required: boolean
   placeholder: string
   helpText: string
+  translations?: DocumentTemplateFieldTranslations
   width: DocumentTemplateFieldWidth
   sortOrder: number
   options: DocumentTemplateFieldOption[]
@@ -132,6 +166,7 @@ export interface DocumentTemplateSection {
   id: string
   title: string
   description: string
+  translations?: DocumentTemplateSectionTranslations
   sortOrder: number
   fields: DocumentTemplateField[]
 }
@@ -181,6 +216,7 @@ export interface DocumentRenderSpec {
 export interface DocumentTemplate extends SyncableEntity {
   name: string
   description: string
+  translations?: DocumentTemplateTranslations
   status: DocumentTemplateStatus
   inputSchema: DocumentInputSchema
   renderSpec: DocumentRenderSpec
@@ -195,6 +231,8 @@ export interface DocumentTemplate extends SyncableEntity {
 export interface DocumentTemplateSnapshot {
   templateId: string
   name: string
+  description?: string
+  translations?: DocumentTemplateTranslations
   inputSchema?: DocumentInputSchema
   renderSpec?: DocumentRenderSpec
   /** @deprecated Compatibility mirror for historical reports. */
@@ -202,10 +240,7 @@ export interface DocumentTemplateSnapshot {
 }
 
 export type DocumentTemplateScalarValue = string | number | boolean
-export type DocumentTemplateTableValue = Record<
-  string,
-  Record<string, DocumentTemplateScalarValue>
->
+export type DocumentTemplateTableValue = Record<string, Record<string, DocumentTemplateScalarValue>>
 export type DocumentTemplateFieldValue =
   | DocumentTemplateScalarValue
   | string[]

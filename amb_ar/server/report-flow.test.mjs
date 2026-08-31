@@ -133,6 +133,20 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(seedTemplate.body.renderSpec.pageSize, 'A4')
   assert.equal(seedTemplate.body.renderSpec.layout, 'branded')
   assert.equal(seedTemplate.body.renderSpec.sections[0].fields[0].label, 'Номер заказа')
+  assert.equal(seedTemplate.body.translations.en.name, 'Integration template')
+  assert.equal(seedTemplate.body.inputSchema.steps[0].translations.fa.title, 'اصلی')
+  assert.equal(
+    seedTemplate.body.inputSchema.steps[0].fields[0].translations.en.label,
+    'Order number',
+  )
+  const persistedTemplate = await request(
+    port,
+    '/api/document-templates/document-template-test-flow',
+    { accountId: admin.body.id },
+  )
+  assert.equal(persistedTemplate.status, 200)
+  assert.equal(persistedTemplate.body.translations.fa.name, 'قالب یکپارچه')
+  assert.equal(persistedTemplate.body.inputSchema.steps[0].translations.en.title, 'Main')
 
   const reportId = 'report-flow'
   const photoBytes = Buffer.from(
@@ -457,7 +471,9 @@ test('worker submits a report and admin processes server-persisted binaries', as
     .prepare('SELECT deleted_at FROM generated_documents WHERE id = ?')
     .get(firstPreview.body.id)
   const templateRow = database
-    .prepare('SELECT input_schema_json, render_spec_json FROM document_templates WHERE id = ?')
+    .prepare(
+      'SELECT translations_json, input_schema_json, render_spec_json FROM document_templates WHERE id = ?',
+    )
     .get('document-template-test-flow')
 
   assert.deepEqual(Buffer.from(photoRow.binary_data), photoBytes)
@@ -469,7 +485,12 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(generatedDocumentRow.content_hash, generatedDocument.body.contentHash)
   assert.equal(replacedPreviewRow, undefined)
   assert.equal(JSON.parse(templateRow.input_schema_json).steps[0].id, 'section-main')
+  assert.equal(
+    JSON.parse(templateRow.input_schema_json).steps[0].fields[0].translations.fa.label,
+    'شماره سفارش',
+  )
   assert.equal(JSON.parse(templateRow.render_spec_json).sections[0].columns, 2)
+  assert.equal(JSON.parse(templateRow.translations_json).en.name, 'Integration template')
   database.close()
 
   const deleted = await request(port, `/api/reports/${reportId}`, {
@@ -591,14 +612,8 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(rearchivedReport.archived_from_status, 'exported')
   rearchivedDatabase.close()
 
-  assert.equal(
-    addCalendarMonth(Date.UTC(2026, 0, 31, 12, 30)),
-    Date.UTC(2026, 1, 28, 12, 30),
-  )
-  assert.equal(
-    addCalendarMonth(Date.UTC(2028, 0, 31, 12, 30)),
-    Date.UTC(2028, 1, 29, 12, 30),
-  )
+  assert.equal(addCalendarMonth(Date.UTC(2026, 0, 31, 12, 30)), Date.UTC(2026, 1, 28, 12, 30))
+  assert.equal(addCalendarMonth(Date.UTC(2028, 0, 31, 12, 30)), Date.UTC(2028, 1, 29, 12, 30))
 
   const archiveDeletionAt = addCalendarMonth(rearchivedReport.deleted_at)
   const purgedEarly = await purgeExpiredArchivedReportsNow(archiveDeletionAt - 1)
@@ -729,14 +744,10 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(savedPhotoOnlyReport.body.draft.productName, photoOnlyTemplate.name)
   assert.equal(savedPhotoOnlyReport.body.draft.mainInfo.productName, photoOnlyTemplate.name)
 
-  const photoOnlyPdf = await request(
-    port,
-    `/api/reports/${photoOnlyReportId}/documents/generate`,
-    {
-      method: 'POST',
-      accountId: worker.body.id,
-    },
-  )
+  const photoOnlyPdf = await request(port, `/api/reports/${photoOnlyReportId}/documents/generate`, {
+    method: 'POST',
+    accountId: worker.body.id,
+  })
   assert.equal(photoOnlyPdf.status, 201)
 
   const deletedPhotoOnlyDraft = await request(port, `/api/reports/${photoOnlyReportId}`, {
@@ -766,9 +777,7 @@ test('worker submits a report and admin processes server-persisted binaries', as
     accountId: admin.body.id,
   })
   assert.equal(
-    templatesAfterDeletion.body.some(
-      (template) => template.id === 'document-template-test-flow',
-    ),
+    templatesAfterDeletion.body.some((template) => template.id === 'document-template-test-flow'),
     false,
   )
 })
@@ -780,9 +789,33 @@ function createTemplate() {
       id: 'section-main',
       title: 'Основное',
       description: '',
+      translations: {
+        ru: { title: 'Основное', description: '' },
+        en: { title: 'Main', description: '' },
+        fa: { title: 'اصلی', description: '' },
+      },
       sortOrder: 1,
       fields: [
-        createTemplateField('field-order', 'mainInfo.orderNumber', 'Номер заказа', 1),
+        {
+          ...createTemplateField('field-order', 'mainInfo.orderNumber', 'Номер заказа', 1),
+          translations: {
+            ru: {
+              label: 'Номер заказа',
+              placeholder: 'Введите номер заказа',
+              helpText: 'Номер из документа поставщика',
+            },
+            en: {
+              label: 'Order number',
+              placeholder: 'Enter the order number',
+              helpText: 'Number from the supplier document',
+            },
+            fa: {
+              label: 'شماره سفارش',
+              placeholder: 'شماره سفارش را وارد کنید',
+              helpText: 'شماره از سند تأمین‌کننده',
+            },
+          },
+        },
         createTemplateField('field-place', 'mainInfo.placeOfSurvey', 'Место инспекции', 2),
         createTemplateField('field-product', 'mainInfo.productName', 'Товар', 3),
         createTemplateField('field-photo', 'photos', 'Фотографии', 4),
@@ -825,6 +858,11 @@ function createTemplate() {
     id: 'document-template-test-flow',
     name: 'Интеграционный макет',
     description: 'Интеграционный макет',
+    translations: {
+      ru: { name: 'Интеграционный макет', description: 'Интеграционный макет' },
+      en: { name: 'Integration template', description: 'Integration template' },
+      fa: { name: 'قالب یکپارچه', description: 'قالب یکپارچه' },
+    },
     status: 'active',
     inputSchema: { version: 1, steps: sections },
     renderSpec: {

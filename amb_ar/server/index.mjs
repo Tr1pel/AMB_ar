@@ -453,6 +453,8 @@ async function handleApiRequest(request, response, requestUrl, db) {
     )
     const renderSpec = validateRenderSpec(input.renderSpec ?? existing?.renderSpec, inputSchema)
     const sections = inputSchema.steps
+    const translations = input.translations ?? existing?.translations
+    validateTemplateTranslations(translations)
 
     if (status === 'active' && !sections.some((section) => section.fields.length > 0)) {
       throw createHttpError(400, 'Опубликованный макет должен содержать хотя бы одно поле')
@@ -463,6 +465,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
       id: documentTemplateId,
       name: normalizeRequiredText(input.name ?? existing?.name, 'Название макета'),
       description: String(input.description ?? existing?.description ?? '').trim(),
+      translations: translations === undefined ? undefined : structuredClone(translations),
       status,
       inputSchema,
       renderSpec,
@@ -623,9 +626,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const template =
       draft.templateSnapshot ??
       db.documentTemplates.find((item) => item.id === draft.templateId && isVisibleEntity(item)) ??
-      db.documentTemplates.find(
-        (item) => item.status === 'active' && isVisibleEntity(item),
-      )
+      db.documentTemplates.find((item) => item.status === 'active' && isVisibleEntity(item))
 
     if (!template) {
       throw createHttpError(409, 'Макет отчёта не найден')
@@ -925,7 +926,8 @@ async function handleApiRequest(request, response, requestUrl, db) {
             '',
         ).trim()
       : ''
-    const productName = productId && selectedProductName ? selectedProductName : template?.name ?? ''
+    const productName =
+      productId && selectedProductName ? selectedProductName : (template?.name ?? '')
     const mainInfo = normalizeJsonObject(incomingDraft.mainInfo, 'Основная информация')
 
     mainInfo.productName = productName
@@ -935,8 +937,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const incomingUpdatedAt = Number(incomingDraft.updatedAt)
     const draft = stampEntity({
       id: reportId,
-      reportNumber:
-        existingDraft?.reportNumber ?? createReportNumber(createdAt),
+      reportNumber: existingDraft?.reportNumber ?? createReportNumber(createdAt),
       status,
       ...(template
         ? { templateId: template.id, templateSnapshot: snapshotTemplate(template) }
@@ -1137,6 +1138,8 @@ function resolveReportTemplate(db, requestedTemplateId, existingDraft) {
     return {
       id: templateId,
       name: existingDraft.templateSnapshot.name,
+      description: existingDraft.templateSnapshot.description,
+      translations: existingDraft.templateSnapshot.translations,
       inputSchema: existingDraft.templateSnapshot.inputSchema ?? { version: 1, steps: sections },
       renderSpec: existingDraft.templateSnapshot.renderSpec ?? createDefaultRenderSpec(sections),
       sections,
@@ -1152,6 +1155,8 @@ function snapshotTemplate(template) {
   return {
     templateId: template.id,
     name: String(template.name ?? ''),
+    description: String(template.description ?? ''),
+    translations: structuredClone(template.translations),
     inputSchema: structuredClone(template.inputSchema ?? { version: 1, steps: sections }),
     renderSpec: structuredClone(template.renderSpec ?? createDefaultRenderSpec(sections)),
     sections: structuredClone(sections),
@@ -1446,6 +1451,7 @@ function validateTemplateSections(value) {
 
     sectionIds.add(sectionId)
     normalizeRequiredText(section.title, 'Название раздела')
+    validateSectionTranslations(section.translations)
     fieldCount += section.fields.length
 
     for (const field of section.fields) {
@@ -1462,6 +1468,7 @@ function validateTemplateSections(value) {
       fieldIds.add(fieldId)
       const dataPath = normalizeRequiredText(field.dataPath, 'Путь поля')
       normalizeRequiredText(field.label, 'Название поля')
+      validateFieldTranslations(field.translations)
 
       if (fieldsByPath.has(dataPath)) {
         throw createHttpError(400, 'Пути полей макета не должны повторяться')
@@ -1526,6 +1533,42 @@ function validateTemplateSections(value) {
   }
 
   return structuredClone(value)
+}
+
+function validateFieldTranslations(value) {
+  validateLocalizedTranslations(value, ['label', 'placeholder', 'helpText'], 'поля макета')
+}
+
+function validateTemplateTranslations(value) {
+  validateLocalizedTranslations(value, ['name', 'description'], 'макета')
+}
+
+function validateSectionTranslations(value) {
+  validateLocalizedTranslations(value, ['title', 'description'], 'раздела макета')
+}
+
+function validateLocalizedTranslations(value, keys, entityLabel) {
+  if (value === undefined) {
+    return
+  }
+
+  if (!isPlainObject(value)) {
+    throw createHttpError(400, `Некорректные переводы ${entityLabel}`)
+  }
+
+  for (const locale of ['ru', 'en', 'fa']) {
+    const translation = value[locale]
+
+    if (!isPlainObject(translation)) {
+      throw createHttpError(400, `Перевод ${entityLabel} для языка «${locale}» не заполнен`)
+    }
+
+    for (const key of keys) {
+      if (typeof translation[key] !== 'string' || translation[key].length > 2_000) {
+        throw createHttpError(400, `Некорректный текст перевода «${locale}.${key}»`)
+      }
+    }
+  }
 }
 
 function normalizeEntityId(value, label) {

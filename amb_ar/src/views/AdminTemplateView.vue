@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
-import { localeTag } from '@/shared/i18n'
+import { currentLocale, localeTag, tForLocale } from '@/shared/i18n'
 import {
   DOCUMENT_TEMPLATE_FIELD_CATALOG,
   type DocumentTemplateFieldCatalogItem,
@@ -13,6 +13,16 @@ import {
   getTemplateRenderSpec,
   syncRenderSpec,
 } from '@/shared/templates/document-template-schema'
+import {
+  createFieldTranslations,
+  createSectionTranslations,
+  DOCUMENT_TEMPLATE_LOCALES,
+  ensureFieldTranslations,
+  ensureSectionTranslations,
+  ensureTemplateTranslations,
+  getLocalizedFieldText,
+  getLocalizedTemplateText,
+} from '@/shared/templates/document-template-localization'
 import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import { useDocumentTemplateStore } from '@/stores/document-template.store'
 import type {
@@ -99,6 +109,14 @@ const totalFieldCount = computed(
     0,
 )
 
+function getTemplateName(template: DocumentTemplate): string {
+  return getLocalizedTemplateText(template, 'name', currentLocale.value)
+}
+
+function getTemplateDescription(template: DocumentTemplate): string {
+  return getLocalizedTemplateText(template, 'description', currentLocale.value)
+}
+
 const fieldTypeOptions: Array<{ value: DocumentTemplateFieldType; label: string }> = [
   { value: 'text', label: 'Текст' },
   { value: 'number', label: 'Число' },
@@ -165,14 +183,17 @@ async function editTemplate(template: DocumentTemplate): Promise<void> {
 function openDraftInEditor(template: DocumentTemplate): void {
   catalogNotice.value = ''
   const editableTemplate = structuredClone(template)
+  ensureTemplateTranslations(editableTemplate)
   const sections = getTemplateInputSections(editableTemplate)
   editableTemplate.inputSchema = createInputSchema(sections)
   editableTemplate.sections = editableTemplate.inputSchema.steps
   editableTemplate.renderSpec = getTemplateRenderSpec(editableTemplate)
   editorTemplate.value = editableTemplate
   editorTemplate.value.sections.forEach((section) => {
+    ensureSectionTranslations(section)
     section.fields.forEach((field) => {
       field.options ??= []
+      ensureFieldTranslations(field)
     })
   })
   selectedSectionId.value = editorTemplate.value.sections[0]?.id ?? null
@@ -201,6 +222,7 @@ async function saveTemplate(): Promise<DocumentTemplate | null> {
     id: editorTemplate.value.id,
     name: editorTemplate.value.name,
     description: editorTemplate.value.description,
+    translations: editorTemplate.value.translations,
     inputSchema: createInputSchema(editorTemplate.value.sections),
     renderSpec: syncRenderSpec(
       editorTemplate.value.renderSpec,
@@ -294,6 +316,7 @@ function addSection(): void {
     id: createLocalId('template-section'),
     title: `Раздел ${editorTemplate.value.sections.length + 1}`,
     description: '',
+    translations: createSectionTranslations(`Раздел ${editorTemplate.value.sections.length + 1}`),
     sortOrder: editorTemplate.value.sections.length + 1,
     fields: [],
   }
@@ -388,6 +411,7 @@ function addCustomField(): void {
     required: false,
     placeholder: '',
     helpText: '',
+    translations: createFieldTranslations('Новое поле'),
     width: 'half',
     sortOrder: section.fields.length + 1,
     options: [],
@@ -736,6 +760,13 @@ function createFieldFromCatalog(
   catalogField: DocumentTemplateFieldCatalogItem,
   sortOrder: number,
 ): DocumentTemplateField {
+  const translations = createFieldTranslations(catalogField.label)
+
+  for (const locale of ['en', 'fa'] as const) {
+    const translatedLabel = tForLocale(catalogField.label, locale)
+    translations[locale].label = translatedLabel === catalogField.label ? '' : translatedLabel
+  }
+
   return {
     id: createLocalId('template-field'),
     dataPath: catalogField.dataPath,
@@ -744,10 +775,22 @@ function createFieldFromCatalog(
     required: false,
     placeholder: '',
     helpText: '',
+    translations,
     width: catalogField.type === 'textarea' || catalogField.type === 'photo' ? 'full' : 'half',
     sortOrder,
     options: [],
   }
+}
+
+function getEditorFieldText(
+  field: DocumentTemplateField,
+  key: 'label' | 'placeholder' | 'helpText',
+): string {
+  return getLocalizedFieldText(field, key, currentLocale.value)
+}
+
+function getCatalogFieldLabel(field: DocumentTemplateFieldCatalogItem): string {
+  return tForLocale(field.label, currentLocale.value)
 }
 
 function createLocalId(prefix: string): string {
@@ -825,8 +868,10 @@ function formatTime(timestamp: number): string {
           </div>
 
           <div>
-            <h2 data-i18n-ignore>{{ template.name }}</h2>
-            <p v-if="template.description" data-i18n-ignore>{{ template.description }}</p>
+            <h2 data-i18n-ignore>{{ getTemplateName(template) }}</h2>
+            <p v-if="getTemplateDescription(template)" data-i18n-ignore>
+              {{ getTemplateDescription(template) }}
+            </p>
             <p v-else>Описание макета не добавлено.</p>
           </div>
 
@@ -884,7 +929,7 @@ function formatTime(timestamp: number): string {
 
     <template v-else>
       <section class="builder-toolbar">
-        <button class="back-button" type="button" @click="closeEditor">
+        <button class="back-button secondary-button" type="button" @click="closeEditor">
           <span aria-hidden="true">←</span>
           К макетам
         </button>
@@ -938,22 +983,44 @@ function formatTime(timestamp: number): string {
       </nav>
 
       <section class="builder-meta app-card">
-        <label class="field-label">
-          Название макета
-          <input
-            v-model="editorTemplate.name"
-            class="field-control"
-            placeholder="Например, Приемка свежих овощей"
-          />
-        </label>
-        <label class="field-label">
-          Описание
-          <input
-            v-model="editorTemplate.description"
-            class="field-control"
-            placeholder="Кратко опишите назначение"
-          />
-        </label>
+        <section class="localized-field-editor">
+          <strong>Название макета</strong>
+          <div class="localized-field-grid">
+            <label
+              v-for="locale in DOCUMENT_TEMPLATE_LOCALES"
+              :key="locale.value"
+              class="localized-field-row"
+            >
+              <span :lang="locale.value" :dir="locale.dir">{{ locale.label }}</span>
+              <input
+                v-model="editorTemplate.translations![locale.value].name"
+                class="field-control"
+                :lang="locale.value"
+                :dir="locale.dir"
+                :aria-label="`Название макета — ${locale.label}`"
+              />
+            </label>
+          </div>
+        </section>
+        <details class="localized-field-details">
+          <summary>Описание макета</summary>
+          <div class="localized-field-grid">
+            <label
+              v-for="locale in DOCUMENT_TEMPLATE_LOCALES"
+              :key="locale.value"
+              class="localized-field-row"
+            >
+              <span :lang="locale.value" :dir="locale.dir">{{ locale.label }}</span>
+              <input
+                v-model="editorTemplate.translations![locale.value].description"
+                class="field-control"
+                :lang="locale.value"
+                :dir="locale.dir"
+                :aria-label="`Описание макета — ${locale.label}`"
+              />
+            </label>
+          </div>
+        </details>
         <dl>
           <div>
             <dt>Разделов</dt>
@@ -1000,17 +1067,44 @@ function formatTime(timestamp: number): string {
         <section v-if="selectedSection" class="builder-canvas app-card">
           <div class="canvas-section-heading">
             <div class="canvas-section-heading__inputs">
-              <input
-                v-model="selectedSection.title"
-                class="section-title-input"
-                aria-label="Название раздела"
-              />
-              <input
-                v-model="selectedSection.description"
-                class="section-description-input"
-                aria-label="Описание раздела"
-                placeholder="Описание раздела"
-              />
+              <section class="localized-field-editor">
+                <strong>Название раздела</strong>
+                <div class="localized-field-grid">
+                  <label
+                    v-for="locale in DOCUMENT_TEMPLATE_LOCALES"
+                    :key="locale.value"
+                    class="localized-field-row"
+                  >
+                    <span :lang="locale.value" :dir="locale.dir">{{ locale.label }}</span>
+                    <input
+                      v-model="selectedSection.translations![locale.value].title"
+                      class="field-control"
+                      :lang="locale.value"
+                      :dir="locale.dir"
+                      :aria-label="`Название раздела — ${locale.label}`"
+                    />
+                  </label>
+                </div>
+              </section>
+              <details class="localized-field-details">
+                <summary>Описание раздела</summary>
+                <div class="localized-field-grid">
+                  <label
+                    v-for="locale in DOCUMENT_TEMPLATE_LOCALES"
+                    :key="locale.value"
+                    class="localized-field-row"
+                  >
+                    <span :lang="locale.value" :dir="locale.dir">{{ locale.label }}</span>
+                    <input
+                      v-model="selectedSection.translations![locale.value].description"
+                      class="field-control"
+                      :lang="locale.value"
+                      :dir="locale.dir"
+                      :aria-label="`Описание раздела — ${locale.label}`"
+                    />
+                  </label>
+                </div>
+              </details>
             </div>
             <div class="inline-icon-actions">
               <button
@@ -1053,10 +1147,12 @@ function formatTime(timestamp: number): string {
               <div class="field-builder-card__body">
                 <span>{{ getFieldTypeLabel(field.type) }}</span>
                 <strong data-i18n-ignore>
-                  {{ field.label }}
+                  {{ getEditorFieldText(field, 'label') }}
                   <em v-if="field.required">*</em>
                 </strong>
-                <small v-if="field.helpText" data-i18n-ignore>{{ field.helpText }}</small>
+                <small v-if="getEditorFieldText(field, 'helpText')" data-i18n-ignore>
+                  {{ getEditorFieldText(field, 'helpText') }}
+                </small>
               </div>
               <div class="inline-icon-actions field-actions">
                 <button
@@ -1094,13 +1190,8 @@ function formatTime(timestamp: number): string {
               <select v-model="fieldCatalogSelection" class="field-control">
                 <option value="">Выберите поле</option>
                 <optgroup v-for="(fields, group) in catalogGroups" :key="group" :label="group">
-                  <option
-                    v-for="field in fields"
-                    :key="field.dataPath"
-                    :value="field.dataPath"
-                    data-i18n-ignore
-                  >
-                    {{ field.label }}
+                  <option v-for="field in fields" :key="field.dataPath" :value="field.dataPath">
+                    {{ getCatalogFieldLabel(field) }}
                   </option>
                 </optgroup>
               </select>
@@ -1127,10 +1218,28 @@ function formatTime(timestamp: number): string {
               <span class="property-type-icon">Aa</span>
             </div>
 
-            <label class="field-label">
-              Название
-              <input v-model="selectedTemplateField.label" class="field-control" />
-            </label>
+            <section class="localized-field-editor">
+              <strong>Название поля</strong>
+              <div class="localized-field-grid">
+                <label
+                  v-for="locale in DOCUMENT_TEMPLATE_LOCALES"
+                  :key="locale.value"
+                  class="localized-field-row"
+                >
+                  <span :lang="locale.value" :dir="locale.dir">
+                    {{ locale.label }}
+                    <small>{{ locale.shortLabel }}</small>
+                  </span>
+                  <input
+                    v-model="selectedTemplateField.translations![locale.value].label"
+                    class="field-control"
+                    :lang="locale.value"
+                    :dir="locale.dir"
+                    :aria-label="`Название поля — ${locale.label}`"
+                  />
+                </label>
+              </div>
+            </section>
             <label class="field-label">
               Тип поля
               <select
@@ -1343,8 +1452,12 @@ function formatTime(timestamp: number): string {
                   class="table-column-option"
                 >
                   <span>{{
-                    calculationSourceFields.find((field) => field.dataPath === sourcePath)?.label ??
-                    sourcePath
+                    calculationSourceFields.find((field) => field.dataPath === sourcePath)
+                      ? getEditorFieldText(
+                          calculationSourceFields.find((field) => field.dataPath === sourcePath)!,
+                          'label',
+                        )
+                      : sourcePath
                   }}</span>
                   <button
                     type="button"
@@ -1370,7 +1483,7 @@ function formatTime(timestamp: number): string {
                     :key="sourceField.dataPath"
                     :value="sourceField.dataPath"
                   >
-                    {{ sourceField.label }}
+                    {{ getEditorFieldText(sourceField, 'label') }}
                   </option>
                 </select>
               </div>
@@ -1380,22 +1493,56 @@ function formatTime(timestamp: number): string {
               ФИО инспектора подставляется автоматически и не редактируется в отчете.
             </p>
 
-            <label v-else class="field-label">
-              Подсказка внутри поля
-              <input
-                v-model="selectedTemplateField.placeholder"
-                class="field-control"
-                placeholder="Необязательно"
-              />
-            </label>
-            <label class="field-label">
-              Пояснение
-              <textarea
-                v-model="selectedTemplateField.helpText"
-                class="field-control property-textarea"
-                placeholder="Текст под полем"
-              />
-            </label>
+            <details
+              v-if="selectedTemplateField.type !== 'signature'"
+              :key="`${selectedTemplateField.id}-placeholder`"
+              class="localized-field-details"
+            >
+              <summary>Подсказка внутри поля</summary>
+              <div class="localized-field-grid">
+                <label
+                  v-for="locale in DOCUMENT_TEMPLATE_LOCALES"
+                  :key="locale.value"
+                  class="localized-field-row"
+                >
+                  <span :lang="locale.value" :dir="locale.dir">
+                    {{ locale.label }}
+                    <small>{{ locale.shortLabel }}</small>
+                  </span>
+                  <input
+                    v-model="selectedTemplateField.translations![locale.value].placeholder"
+                    class="field-control"
+                    :lang="locale.value"
+                    :dir="locale.dir"
+                    :aria-label="`Подсказка внутри поля — ${locale.label}`"
+                    placeholder="Необязательно"
+                  />
+                </label>
+              </div>
+            </details>
+            <details :key="`${selectedTemplateField.id}-help`" class="localized-field-details">
+              <summary>Пояснение</summary>
+              <div class="localized-field-grid">
+                <label
+                  v-for="locale in DOCUMENT_TEMPLATE_LOCALES"
+                  :key="locale.value"
+                  class="localized-field-row localized-field-row--textarea"
+                >
+                  <span :lang="locale.value" :dir="locale.dir">
+                    {{ locale.label }}
+                    <small>{{ locale.shortLabel }}</small>
+                  </span>
+                  <textarea
+                    v-model="selectedTemplateField.translations![locale.value].helpText"
+                    class="field-control property-textarea"
+                    :lang="locale.value"
+                    :dir="locale.dir"
+                    :aria-label="`Пояснение — ${locale.label}`"
+                    placeholder="Текст под полем"
+                  />
+                </label>
+              </div>
+            </details>
 
             <div class="property-choice">
               <span>Ширина</span>
@@ -1428,18 +1575,26 @@ function formatTime(timestamp: number): string {
             <div class="field-preview">
               <span>Предпросмотр</span>
               <label data-i18n-ignore>
-                {{ selectedTemplateField.label }}
+                {{ getEditorFieldText(selectedTemplateField, 'label') }}
                 <em v-if="selectedTemplateField.required">*</em>
               </label>
               <textarea
                 v-if="selectedTemplateField.type === 'textarea'"
                 disabled
-                :placeholder="selectedTemplateField.placeholder || 'Введите значение'"
-                :data-i18n-ignore="selectedTemplateField.placeholder ? '' : undefined"
+                :placeholder="
+                  getEditorFieldText(selectedTemplateField, 'placeholder') || 'Введите значение'
+                "
+                :data-i18n-ignore="
+                  getEditorFieldText(selectedTemplateField, 'placeholder') ? '' : undefined
+                "
               />
               <select v-else-if="selectedTemplateField.type === 'select'" disabled>
-                <option v-if="selectedTemplateField.placeholder" value="" data-i18n-ignore>
-                  {{ selectedTemplateField.placeholder }}
+                <option
+                  v-if="getEditorFieldText(selectedTemplateField, 'placeholder')"
+                  value=""
+                  data-i18n-ignore
+                >
+                  {{ getEditorFieldText(selectedTemplateField, 'placeholder') }}
                 </option>
                 <option v-else value="">Выберите значение</option>
                 <option
@@ -1469,11 +1624,15 @@ function formatTime(timestamp: number): string {
                       ? 'date'
                       : 'text'
                 "
-                :placeholder="selectedTemplateField.placeholder || 'Введите значение'"
-                :data-i18n-ignore="selectedTemplateField.placeholder ? '' : undefined"
+                :placeholder="
+                  getEditorFieldText(selectedTemplateField, 'placeholder') || 'Введите значение'
+                "
+                :data-i18n-ignore="
+                  getEditorFieldText(selectedTemplateField, 'placeholder') ? '' : undefined
+                "
               />
-              <small v-if="selectedTemplateField.helpText" data-i18n-ignore>
-                {{ selectedTemplateField.helpText }}
+              <small v-if="getEditorFieldText(selectedTemplateField, 'helpText')" data-i18n-ignore>
+                {{ getEditorFieldText(selectedTemplateField, 'helpText') }}
               </small>
             </div>
 
@@ -2372,6 +2531,7 @@ function formatTime(timestamp: number): string {
   display: grid;
   min-width: 0;
   flex: 1;
+  gap: 12px;
 }
 
 .section-title-input,
@@ -2559,6 +2719,82 @@ function formatTime(timestamp: number): string {
   color: var(--color-primary);
   font-family: Georgia, serif;
   font-weight: 900;
+}
+
+.localized-field-editor,
+.localized-field-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.localized-field-editor > strong {
+  color: var(--color-text);
+  font-size: 0.78rem;
+}
+
+.localized-field-row {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.localized-field-row > span {
+  display: grid;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.localized-field-row > span small {
+  color: var(--color-border-strong);
+  font-size: 0.58rem;
+  letter-spacing: 0.07em;
+}
+
+.localized-field-row--textarea {
+  align-items: start;
+}
+
+.localized-field-details {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface);
+}
+
+.localized-field-details > summary {
+  position: relative;
+  padding: 11px 34px 11px 11px;
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 850;
+  list-style: none;
+}
+
+.localized-field-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.localized-field-details > summary::after {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  color: var(--color-primary);
+  content: '+';
+  font-size: 1rem;
+  transform: translateY(-50%);
+}
+
+.localized-field-details[open] > summary::after {
+  content: '−';
+}
+
+.localized-field-details > .localized-field-grid {
+  border-top: 1px solid var(--color-border);
+  padding: 10px;
+  background: var(--color-surface-muted);
 }
 
 .property-textarea {

@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { localeTag } from '@/shared/i18n'
+import { currentLocale, localeTag } from '@/shared/i18n'
+import { getLocalizedTemplateText } from '@/shared/templates/document-template-localization'
 import { useDocumentTemplateStore } from '@/stores/document-template.store'
 import { useReportDraftStore } from '@/stores/report-draft.store'
 
@@ -19,10 +20,7 @@ const selectedTemplate = computed(() =>
 )
 
 onMounted(async () => {
-  await Promise.all([
-    documentTemplateStore.loadTemplates(),
-    reportDraftStore.loadWorkerHistory(),
-  ])
+  await Promise.all([documentTemplateStore.loadTemplates(), reportDraftStore.loadWorkerHistory()])
 
   viewStep.value = reportDraftStore.latestWorkerDraft ? 'decision' : 'template'
 })
@@ -52,9 +50,17 @@ function goBack(): void {
 function getFieldCount(templateId: string): number {
   const template = documentTemplateStore.activeTemplates.find((item) => item.id === templateId)
 
-  return (
-    template?.sections.reduce((total, section) => total + section.fields.length, 0) ?? 0
-  )
+  return template?.sections.reduce((total, section) => total + section.fields.length, 0) ?? 0
+}
+
+function getTemplateName(template: (typeof documentTemplateStore.activeTemplates)[number]): string {
+  return getLocalizedTemplateText(template, 'name', currentLocale.value)
+}
+
+function getTemplateDescription(
+  template: (typeof documentTemplateStore.activeTemplates)[number],
+): string {
+  return getLocalizedTemplateText(template, 'description', currentLocale.value)
 }
 
 async function startReport(): Promise<void> {
@@ -77,9 +83,7 @@ async function startReport(): Promise<void> {
         <h1>Выберите макет</h1>
         <p>Черновик создастся после подтверждения.</p>
       </div>
-      <button class="secondary-button" type="button" @click="goBack">
-        Назад
-      </button>
+      <button class="secondary-button" type="button" @click="goBack">Назад</button>
     </section>
 
     <section v-else-if="viewStep === 'decision'" class="choice-heading choice-heading--compact">
@@ -89,7 +93,11 @@ async function startReport(): Promise<void> {
     <p v-if="viewStep === 'loading'" class="choice-state">Загружаем…</p>
 
     <section v-else-if="viewStep === 'decision'" class="report-action-grid">
-      <button class="report-action report-action--primary" type="button" @click="continueLatestReport">
+      <button
+        class="report-action report-action--primary"
+        type="button"
+        @click="continueLatestReport"
+      >
         <span class="report-action__icon" aria-hidden="true">→</span>
         <span>
           <strong>Продолжить отчет</strong>
@@ -109,10 +117,7 @@ async function startReport(): Promise<void> {
       </button>
     </section>
 
-    <section
-      v-else-if="documentTemplateStore.activeTemplates.length"
-      class="template-grid"
-    >
+    <section v-else-if="documentTemplateStore.activeTemplates.length" class="template-grid">
       <button
         v-for="template in documentTemplateStore.activeTemplates"
         :key="template.id"
@@ -123,8 +128,10 @@ async function startReport(): Promise<void> {
       >
         <span class="template-option__marker" aria-hidden="true" />
         <span class="template-option__content">
-          <strong data-i18n-ignore>{{ template.name }}</strong>
-          <small v-if="template.description" data-i18n-ignore>{{ template.description }}</small>
+          <strong data-i18n-ignore>{{ getTemplateName(template) }}</strong>
+          <small v-if="getTemplateDescription(template)" data-i18n-ignore>
+            {{ getTemplateDescription(template) }}
+          </small>
           <span>
             {{ template.sections.length }} разделов · {{ getFieldCount(template.id) }} полей
           </span>
@@ -373,6 +380,5 @@ async function startReport(): Promise<void> {
   .choice-footer {
     bottom: 82px;
   }
-
 }
 </style>

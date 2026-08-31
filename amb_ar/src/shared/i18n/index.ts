@@ -619,6 +619,14 @@ export function t(source: string): string {
   return translateKnownText(source)
 }
 
+export function tForLocale(source: string, locale: AppLocale): string {
+  if (locale === 'ru') {
+    return source
+  }
+
+  return messages[source]?.[locale] ?? source
+}
+
 export function setLocale(locale: AppLocale): void {
   currentLocale.value = locale
 }
