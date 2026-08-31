@@ -187,6 +187,64 @@ test('a photo field fits six photos on one page and moves the seventh to the nex
   assert.equal(sevenPhotoPdf.toString('latin1').match(/\/Type\s*\/Page\b/g)?.length ?? 0, 2)
 })
 
+test('a repeating photo field prints every product instance on its own page', async () => {
+  const photoField = {
+    id: 'field-instances',
+    label: 'Экземпляры товара',
+    type: 'repeatingPhoto',
+    width: 'full',
+    dataPath: 'custom.instances',
+  }
+  const section = {
+    id: 'section-instances',
+    title: 'Проверка экземпляров',
+    description: '',
+    fields: [photoField],
+  }
+  const template = {
+    id: 'document-template-instances',
+    name: 'Фотоотчёт',
+    inputSchema: { version: 1, steps: [section] },
+    renderSpec: {
+      version: 1,
+      mode: 'flow',
+      layout: 'branded',
+      pageSize: 'A4',
+      documentTitle: 'Фотоотчёт',
+      sections: [createRenderSection(section, false)],
+    },
+  }
+  const report = {
+    id: 'report-instances',
+    reportNumber: 'AMB-QC-MSC01-20260818-0002',
+    inspectorName: 'Инспектор',
+    productName: 'Товар',
+    updatedAt: Date.UTC(2026, 7, 18),
+    mainInfo: {},
+    customFieldValues: {
+      'custom.instances': [
+        { id: 'instance-1', name: 'Экземпляр 1', sortOrder: 1 },
+        { id: 'instance-2', name: 'Экземпляр 2', sortOrder: 2 },
+      ],
+    },
+  }
+  const imageBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  const photos = ['instance-1', 'instance-2'].map((repeatingPhotoBlockId, index) => ({
+    id: `instance-photo-${index + 1}`,
+    templateFieldId: photoField.id,
+    repeatingPhotoBlockId,
+    fileName: `instance-photo-${index + 1}.png`,
+    blobBase64: imageBase64,
+    caption: '',
+    createdAt: Date.UTC(2026, 7, 18),
+  }))
+
+  const pdf = await generateTemplateReportPdf({ report, photos, template })
+
+  assert.equal(pdf.toString('latin1').match(/\/Type\s*\/Page\b/g)?.length ?? 0, 2)
+})
+
 function createRenderSection(section, pageBreakBefore) {
   return {
     id: `render-${section.id}`,

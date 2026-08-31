@@ -206,7 +206,10 @@ function createCustomTemplateField(
     required: false,
     placeholder: '',
     helpText: '',
-    width: type === 'table' || type === 'textarea' || type === 'photo' ? 'full' : 'half',
+    width:
+      type === 'table' || type === 'textarea' || type === 'photo' || type === 'repeatingPhoto'
+        ? 'full'
+        : 'half',
     sortOrder,
     options: [],
     ...overrides,

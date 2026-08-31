@@ -86,7 +86,11 @@ export async function generateTemplateReportPdf({
         continue
       }
 
-      if (field.type === 'photo' || field.dataPath === 'photos') {
+      if (
+        field.type === 'photo' ||
+        field.type === 'repeatingPhoto' ||
+        field.dataPath === 'photos'
+      ) {
         photoFields.push({ field, spec: fieldSpec })
         continue
       }
@@ -141,6 +145,37 @@ export async function generateTemplateReportPdf({
   }
 
   for (const [photoFieldIndex, entry] of photoFields.entries()) {
+    if (entry.field.type === 'repeatingPhoto') {
+      const blocks = getRepeatingPhotoBlocks(report, entry.field)
+
+      for (const block of blocks) {
+        const blockPhotos = photos.filter(
+          (photo) =>
+            photo.templateFieldId === entry.field.id && photo.repeatingPhotoBlockId === block.id,
+        )
+
+        if (!blockPhotos.length) {
+          continue
+        }
+
+        for (const [photoPageIndex, pagePhotos] of chunk(blockPhotos, 6).entries()) {
+          if (state.hasDocumentContent || photoPageIndex > 0) {
+            beginPage(state, report, documentTitle, templateSubtitle, preparedLogo)
+          }
+          drawSectionHeading(
+            state,
+            `${getPdfFieldLabel(entry.field, entry.spec)} · ${block.name || 'Экземпляр'}${
+              photoPageIndex ? ' · продолжение' : ''
+            }`,
+          )
+          drawPhotoContent(state, report, pagePhotos, binaryAdapter)
+          state.hasContent = true
+        }
+      }
+
+      continue
+    }
+
     const fieldPhotos = photos.filter(
       (photo) =>
         photo.templateFieldId === entry.field.id ||
@@ -175,6 +210,24 @@ export async function generateTemplateReportPdf({
   document.end()
 
   return completed
+}
+
+function getRepeatingPhotoBlocks(report, field) {
+  const blocks = report.customFieldValues?.[field.dataPath]
+
+  if (!Array.isArray(blocks)) {
+    return []
+  }
+
+  return blocks
+    .filter(
+      (block) =>
+        block &&
+        typeof block.id === 'string' &&
+        typeof block.name === 'string' &&
+        Number.isFinite(block.sortOrder),
+    )
+    .sort((first, second) => first.sortOrder - second.sortOrder)
 }
 
 function createFieldBlocks(report, field, spec, section) {

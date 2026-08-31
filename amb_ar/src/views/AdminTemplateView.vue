@@ -131,6 +131,7 @@ const fieldTypeOptions: Array<{ value: DocumentTemplateFieldType; label: string 
   { value: 'table', label: 'Таблица проверок' },
   { value: 'calculated', label: 'Вычисляемое значение' },
   { value: 'photo', label: 'Фото' },
+  { value: 'repeatingPhoto', label: 'Повторяемый фотоблок' },
   { value: 'signature', label: 'Подпись' },
 ]
 
@@ -776,7 +777,12 @@ function createFieldFromCatalog(
     placeholder: '',
     helpText: '',
     translations,
-    width: catalogField.type === 'textarea' || catalogField.type === 'photo' ? 'full' : 'half',
+    width:
+      catalogField.type === 'textarea' ||
+      catalogField.type === 'photo' ||
+      catalogField.type === 'repeatingPhoto'
+        ? 'full'
+        : 'half',
     sortOrder,
     options: [],
   }
@@ -1611,8 +1617,18 @@ function formatTime(timestamp: number): string {
                 disabled
                 value="ФИО инспектора — автоматически"
               />
-              <div v-else-if="selectedTemplateField.type === 'photo'" class="photo-placeholder">
-                ＋ Добавить фото
+              <div
+                v-else-if="
+                  selectedTemplateField.type === 'photo' ||
+                  selectedTemplateField.type === 'repeatingPhoto'
+                "
+                class="photo-placeholder"
+              >
+                {{
+                  selectedTemplateField.type === 'repeatingPhoto'
+                    ? '＋ Добавить экземпляр'
+                    : '＋ Добавить фото'
+                }}
               </div>
               <input
                 v-else

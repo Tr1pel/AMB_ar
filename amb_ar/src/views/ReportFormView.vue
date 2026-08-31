@@ -20,6 +20,7 @@ import type {
   DocumentTemplateFieldValue,
   DocumentTemplateSection,
   DocumentTemplateTableValue,
+  RepeatingPhotoBlockValue,
   ReportDraft,
   ReportInspectionResults,
   ReportMainInfo,
@@ -52,6 +53,7 @@ interface LocalPhotoInput {
   url: string
   fileName: string
   templateFieldId?: string
+  repeatingPhotoBlockId?: string
   category: ReportPhotoCategory
   caption: string
   sortOrder: number
@@ -301,7 +303,10 @@ const activeTemplateSection = computed(() =>
 const templatePhotoFieldIds = computed(() =>
   templateSections.value.flatMap((section) =>
     section.fields
-      .filter((field) => field.type === 'photo' || field.dataPath === 'photos')
+      .filter(
+        (field) =>
+          field.type === 'photo' || field.type === 'repeatingPhoto' || field.dataPath === 'photos',
+      )
       .map((field) => field.id),
   ),
 )
@@ -414,6 +419,7 @@ watch(
       id: photo.id,
       file: photo.file,
       templateFieldId: photo.templateFieldId,
+      repeatingPhotoBlockId: photo.repeatingPhotoBlockId,
       caption: photo.caption,
       category: photo.category,
       sortOrder: photo.sortOrder,
@@ -714,6 +720,12 @@ function hasDynamicFieldValue(field: DocumentTemplateField): boolean {
     return getPhotosByTemplateField(field.id).length > 0
   }
 
+  if (field.type === 'repeatingPhoto') {
+    return getRepeatingPhotoBlocks(field).some(
+      (block) => getPhotosByRepeatingPhotoBlock(field.id, block.id).length > 0,
+    )
+  }
+
   if (field.dataPath === 'sampling.points') {
     return sampling.points.length > 0
   }
@@ -862,7 +874,99 @@ function handleTemplatePhotoSelected(fieldId: string, file: File): void {
   appendPhoto(file, 'goods', fieldId)
 }
 
-function appendPhoto(file: File, category: ReportPhotoCategory, templateFieldId?: string): void {
+function getRepeatingPhotoBlocks(field: DocumentTemplateField): RepeatingPhotoBlockValue[] {
+  const value = customFieldValues[field.dataPath]
+
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .filter(
+      (block): block is RepeatingPhotoBlockValue =>
+        typeof block === 'object' &&
+        block !== null &&
+        typeof block.id === 'string' &&
+        typeof block.name === 'string' &&
+        typeof block.sortOrder === 'number',
+    )
+    .sort((first, second) => first.sortOrder - second.sortOrder)
+}
+
+function addRepeatingPhotoBlock(field: DocumentTemplateField): void {
+  const blocks = getRepeatingPhotoBlocks(field)
+  const number = blocks.length + 1
+
+  customFieldValues[field.dataPath] = [
+    ...blocks,
+    { id: createEntityId('photo-block'), name: `Экземпляр ${number}`, sortOrder: number },
+  ]
+}
+
+function updateRepeatingPhotoBlockName(
+  field: DocumentTemplateField,
+  blockId: string,
+  name: string,
+): void {
+  customFieldValues[field.dataPath] = getRepeatingPhotoBlocks(field).map((block) =>
+    block.id === blockId ? { ...block, name } : block,
+  )
+}
+
+function moveRepeatingPhotoBlock(
+  field: DocumentTemplateField,
+  blockId: string,
+  direction: -1 | 1,
+): void {
+  const blocks = getRepeatingPhotoBlocks(field)
+  const blockIndex = blocks.findIndex((block) => block.id === blockId)
+  const targetIndex = blockIndex + direction
+
+  if (blockIndex < 0 || targetIndex < 0 || targetIndex >= blocks.length) {
+    return
+  }
+
+  const [block] = blocks.splice(blockIndex, 1)
+
+  if (block) {
+    blocks.splice(targetIndex, 0, block)
+  }
+
+  customFieldValues[field.dataPath] = blocks.map((item, index) => ({
+    ...item,
+    sortOrder: index + 1,
+  }))
+}
+
+function removeRepeatingPhotoBlock(field: DocumentTemplateField, blockId: string): void {
+  const removedPhotos = photos.value.filter(
+    (photo) => photo.templateFieldId === field.id && photo.repeatingPhotoBlockId === blockId,
+  )
+  removedPhotos.forEach((photo) => URL.revokeObjectURL(photo.url))
+  photos.value = photos.value.filter(
+    (photo) => photo.templateFieldId !== field.id || photo.repeatingPhotoBlockId !== blockId,
+  )
+  customFieldValues[field.dataPath] = getRepeatingPhotoBlocks(field).filter(
+    (block) => block.id !== blockId,
+  )
+}
+
+function getPhotosByRepeatingPhotoBlock(fieldId: string, blockId: string): LocalPhotoInput[] {
+  return photos.value.filter(
+    (photo) => photo.templateFieldId === fieldId && photo.repeatingPhotoBlockId === blockId,
+  )
+}
+
+function handleRepeatingPhotoSelected(fieldId: string, blockId: string, file: File): void {
+  appendPhoto(file, 'goods', fieldId, blockId)
+}
+
+function appendPhoto(
+  file: File,
+  category: ReportPhotoCategory,
+  templateFieldId?: string,
+  repeatingPhotoBlockId?: string,
+): void {
   const nextOrder = photos.value.length + 1
 
   photos.value = [
@@ -875,6 +979,7 @@ function appendPhoto(file: File, category: ReportPhotoCategory, templateFieldId?
       url: URL.createObjectURL(file),
       fileName: file.name || 'Фото отчета',
       ...(templateFieldId ? { templateFieldId } : {}),
+      ...(repeatingPhotoBlockId ? { repeatingPhotoBlockId } : {}),
       category,
       caption: '',
       sortOrder: nextOrder,
@@ -1255,6 +1360,7 @@ function buildReportInput() {
       id: photo.id,
       file: photo.file,
       templateFieldId: photo.templateFieldId,
+      repeatingPhotoBlockId: photo.repeatingPhotoBlockId,
       category: photo.category,
       caption: photo.caption,
       sortOrder: photo.sortOrder,
@@ -1317,6 +1423,7 @@ function hydrateExistingReport(): void {
       url: URL.createObjectURL(photo.blob),
       fileName: photo.fileName,
       templateFieldId: photo.templateFieldId,
+      repeatingPhotoBlockId: photo.repeatingPhotoBlockId,
       category: photo.category,
       caption: photo.caption,
       sortOrder: photo.sortOrder,
@@ -1405,7 +1512,87 @@ function hydrateExistingReport(): void {
         <div class="dynamic-field-grid">
           <template v-for="field in activeTemplateSection.fields" :key="field.id">
             <section
-              v-if="field.type === 'photo' || field.dataPath === 'photos'"
+              v-if="field.type === 'repeatingPhoto'"
+              class="dynamic-special-block dynamic-field--full repeating-photo-field"
+            >
+              <div class="dynamic-special-block__heading">
+                <div>
+                  <h3 data-i18n-ignore>{{ getFieldLabel(field) }}</h3>
+                  <p v-if="getFieldHelpText(field)" data-i18n-ignore>
+                    {{ getFieldHelpText(field) }}
+                  </p>
+                  <p v-else>Добавьте экземпляры товара и фотографии каждого из них.</p>
+                </div>
+                <strong v-if="field.required">Обязательно</strong>
+              </div>
+
+              <button
+                class="secondary-button repeating-photo-field__add"
+                type="button"
+                :disabled="reportDraftStore.isSaving"
+                @click="addRepeatingPhotoBlock(field)"
+              >
+                + Добавить экземпляр
+              </button>
+
+              <section
+                v-for="(block, blockIndex) in getRepeatingPhotoBlocks(field)"
+                :key="block.id"
+                class="repeating-photo-block"
+              >
+                <header class="repeating-photo-block__heading">
+                  <h4>{{ block.name || `Экземпляр ${blockIndex + 1}` }}</h4>
+                  <div class="repeating-photo-block__actions">
+                    <button
+                      type="button"
+                      :disabled="reportDraftStore.isSaving || blockIndex === 0"
+                      aria-label="Переместить экземпляр выше"
+                      @click="moveRepeatingPhotoBlock(field, block.id, -1)"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      :disabled="
+                        reportDraftStore.isSaving ||
+                        blockIndex === getRepeatingPhotoBlocks(field).length - 1
+                      "
+                      aria-label="Переместить экземпляр ниже"
+                      @click="moveRepeatingPhotoBlock(field, block.id, 1)"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      class="repeating-photo-block__delete"
+                      type="button"
+                      :disabled="reportDraftStore.isSaving"
+                      @click="removeRepeatingPhotoBlock(field, block.id)"
+                    >
+                      Удалить экземпляр
+                    </button>
+                  </div>
+                </header>
+                <label class="field-label">
+                  Название экземпляра
+                  <input
+                    :value="block.name"
+                    class="field-control"
+                    :disabled="reportDraftStore.isSaving"
+                    @input="updateRepeatingPhotoBlockName(field, block.id, getEventValue($event))"
+                  />
+                </label>
+                <PhotoPicker
+                  :photos="getPhotosByRepeatingPhotoBlock(field.id, block.id)"
+                  :disabled="reportDraftStore.isSaving"
+                  @select-photo="(file) => handleRepeatingPhotoSelected(field.id, block.id, file)"
+                  @update-caption="updatePhotoCaption"
+                  @remove-photo="removePhoto"
+                />
+              </section>
+            </section>
+
+            <section
+              v-else-if="field.type === 'photo' || field.dataPath === 'photos'"
               class="dynamic-special-block dynamic-field--full"
             >
               <div class="dynamic-special-block__heading">
@@ -2162,6 +2349,58 @@ function hydrateExistingReport(): void {
   font-weight: 900;
 }
 
+.repeating-photo-field {
+  gap: 12px;
+}
+
+.repeating-photo-field__add {
+  justify-self: start;
+}
+
+.repeating-photo-block {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--color-surface-muted);
+}
+
+.repeating-photo-block__heading,
+.repeating-photo-block__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.repeating-photo-block__heading {
+  justify-content: space-between;
+}
+
+.repeating-photo-block__heading h4 {
+  color: var(--color-text);
+  font-size: 0.92rem;
+  font-weight: 900;
+}
+
+.repeating-photo-block__actions button {
+  min-height: 34px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-weight: 800;
+}
+
+.repeating-photo-block__actions button:disabled {
+  opacity: 0.45;
+}
+
+.repeating-photo-block__actions .repeating-photo-block__delete {
+  color: var(--color-danger);
+}
+
 .mobile-check-table {
   gap: 12px;
 }
@@ -2494,6 +2733,20 @@ function hydrateExistingReport(): void {
 
   .dynamic-field--full {
     grid-column: auto;
+  }
+
+  .repeating-photo-block__heading,
+  .repeating-photo-block__actions {
+    align-items: flex-start;
+  }
+
+  .repeating-photo-block__heading {
+    display: grid;
+    gap: 10px;
+  }
+
+  .repeating-photo-block__actions {
+    flex-wrap: wrap;
   }
 }
 

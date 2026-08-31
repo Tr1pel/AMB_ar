@@ -161,6 +161,7 @@ export function createServerDatabase(databasePath, options = {}) {
       id TEXT PRIMARY KEY,
       draft_id TEXT NOT NULL,
       template_field_id TEXT,
+      repeating_photo_block_id TEXT,
       category TEXT NOT NULL,
       file_name TEXT NOT NULL,
       mime_type TEXT NOT NULL,
@@ -204,6 +205,7 @@ export function createServerDatabase(databasePath, options = {}) {
 
   migrateAccountPassword(database)
   migrateProductPhotoTemplateField(database)
+  migrateProductPhotoRepeatingBlock(database)
   migrateDocumentTemplateSchemas(database)
   migrateReportArchiveStatus(database)
   migrateReportNumber(database)
@@ -371,6 +373,20 @@ function migrateProductPhotoTemplateField(database) {
   `)
 }
 
+function migrateProductPhotoRepeatingBlock(database) {
+  const columns = database.prepare('PRAGMA table_info(product_photos)').all()
+
+  if (!columns.some((column) => column.name === 'repeating_photo_block_id')) {
+    database.exec('ALTER TABLE product_photos ADD COLUMN repeating_photo_block_id TEXT')
+  }
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS product_photos_draft_repeating_block_sort_idx
+      ON product_photos (draft_id, template_field_id, repeating_photo_block_id, sort_order)
+      WHERE deleted_at IS NULL
+  `)
+}
+
 function migrateReportArchiveStatus(database) {
   const columns = database.prepare('PRAGMA table_info(report_drafts)').all()
 
@@ -516,7 +532,7 @@ function prepareStatements(database) {
     productPhotos: {
       select: database.prepare(`
         SELECT
-          id, draft_id, template_field_id, category, file_name, mime_type, size, caption, sort_order, created_at,
+          id, draft_id, template_field_id, repeating_photo_block_id, category, file_name, mime_type, size, caption, sort_order, created_at,
           deleted_at, last_modified, local_version, server_timestamp, server_version
         FROM product_photos
       `),
@@ -527,12 +543,13 @@ function prepareStatements(database) {
       `),
       upsert: database.prepare(`
         INSERT INTO product_photos (
-          id, draft_id, template_field_id, category, file_name, mime_type, size, binary_data, caption, sort_order,
+          id, draft_id, template_field_id, repeating_photo_block_id, category, file_name, mime_type, size, binary_data, caption, sort_order,
           created_at, deleted_at, last_modified, local_version, server_timestamp, server_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
           draft_id = excluded.draft_id,
           template_field_id = excluded.template_field_id,
+          repeating_photo_block_id = excluded.repeating_photo_block_id,
           category = excluded.category,
           file_name = excluded.file_name,
           mime_type = excluded.mime_type,
@@ -871,6 +888,7 @@ function productPhotoToParameters(entity) {
     entity.id,
     entity.draftId,
     nullable(entity.templateFieldId),
+    nullable(entity.repeatingPhotoBlockId),
     entity.category,
     entity.fileName,
     entity.mimeType,
@@ -1025,6 +1043,9 @@ function productPhotoFromRow(row, binaryData) {
     id: row.id,
     draftId: row.draft_id,
     ...(row.template_field_id === null ? {} : { templateFieldId: row.template_field_id }),
+    ...(row.repeating_photo_block_id === null
+      ? {}
+      : { repeatingPhotoBlockId: row.repeating_photo_block_id }),
     category: row.category,
     fileName: row.file_name,
     mimeType: row.mime_type,

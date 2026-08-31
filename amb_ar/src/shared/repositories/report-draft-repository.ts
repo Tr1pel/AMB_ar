@@ -41,6 +41,7 @@ export interface CreateReportPhotoInput {
   id?: string
   file: File
   templateFieldId?: string
+  repeatingPhotoBlockId?: string
   category: ReportPhotoCategory
   caption: string
   sortOrder: number
@@ -189,6 +190,9 @@ export async function createReportDraft(
         id: photoInput.id ?? createEntityId('photo'),
         draftId,
         ...(photoInput.templateFieldId ? { templateFieldId: photoInput.templateFieldId } : {}),
+        ...(photoInput.repeatingPhotoBlockId
+          ? { repeatingPhotoBlockId: photoInput.repeatingPhotoBlockId }
+          : {}),
         category: photoInput.category,
         fileName: photoInput.file.name || 'quality-report-photo.jpg',
         mimeType: compressedPhoto.mimeType,

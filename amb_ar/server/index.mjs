@@ -873,6 +873,10 @@ async function handleApiRequest(request, response, requestUrl, db) {
 
     const template = resolveReportTemplate(db, incomingDraft.templateId, existingDraft)
     const templatePhotoFieldIds = getTemplatePhotoFieldIds(template)
+    const repeatingPhotoBlockIds = getRepeatingPhotoBlockIds(
+      template,
+      incomingDraft.customFieldValues,
+    )
     const incomingPhotos = Array.isArray(input.photos) ? input.photos : []
 
     if (incomingPhotos.length > MAX_PHOTOS_PER_REPORT) {
@@ -880,7 +884,14 @@ async function handleApiRequest(request, response, requestUrl, db) {
     }
 
     const normalizedPhotos = incomingPhotos.map((photo, index) =>
-      normalizePhotoInput(photo, index, reportId, db.productPhotos, templatePhotoFieldIds),
+      normalizePhotoInput(
+        photo,
+        index,
+        reportId,
+        db.productPhotos,
+        templatePhotoFieldIds,
+        repeatingPhotoBlockIds,
+      ),
     )
     const incomingPhotoIds = new Set(normalizedPhotos.map((photo) => photo.id))
 
@@ -1039,7 +1050,14 @@ async function handleApiRequest(request, response, requestUrl, db) {
   return false
 }
 
-function normalizePhotoInput(input, index, reportId, storedPhotos, templatePhotoFieldIds) {
+function normalizePhotoInput(
+  input,
+  index,
+  reportId,
+  storedPhotos,
+  templatePhotoFieldIds,
+  repeatingPhotoBlockIds,
+) {
   if (!isPlainObject(input)) {
     throw createHttpError(400, 'Некорректные данные фотографии')
   }
@@ -1072,6 +1090,25 @@ function normalizePhotoInput(input, index, reportId, storedPhotos, templatePhoto
     templateFieldId = templatePhotoFieldIds.values().next().value
   }
 
+  const requestedRepeatingPhotoBlockId = String(
+    input.repeatingPhotoBlockId ?? existing?.repeatingPhotoBlockId ?? '',
+  ).trim()
+  let repeatingPhotoBlockId
+
+  if (requestedRepeatingPhotoBlockId) {
+    repeatingPhotoBlockId = normalizeEntityId(
+      requestedRepeatingPhotoBlockId,
+      'Идентификатор экземпляра фотографии',
+    )
+    const allowedBlockIds = templateFieldId
+      ? repeatingPhotoBlockIds.get(templateFieldId)
+      : undefined
+
+    if (!allowedBlockIds?.has(repeatingPhotoBlockId)) {
+      throw createHttpError(400, 'Экземпляр повторяемого фотоблока отсутствует в отчете')
+    }
+  }
+
   const mimeType = String(input.mimeType ?? existing?.mimeType ?? '')
     .trim()
     .toLowerCase()
@@ -1097,6 +1134,7 @@ function normalizePhotoInput(input, index, reportId, storedPhotos, templatePhoto
     id,
     draftId: reportId,
     ...(templateFieldId ? { templateFieldId } : {}),
+    ...(repeatingPhotoBlockId ? { repeatingPhotoBlockId } : {}),
     category,
     fileName: normalizeRequiredText(input.fileName ?? existing?.fileName, 'Имя фотографии'),
     mimeType,
@@ -1171,10 +1209,37 @@ function getTemplatePhotoFieldIds(template) {
   return new Set(
     getTemplateSteps(template).flatMap((section) =>
       (section.fields ?? [])
-        .filter((field) => field.type === 'photo' || field.dataPath === 'photos')
+        .filter(
+          (field) =>
+            field.type === 'photo' ||
+            field.type === 'repeatingPhoto' ||
+            field.dataPath === 'photos',
+        )
         .map((field) => field.id),
     ),
   )
+}
+
+function getRepeatingPhotoBlockIds(template, customFieldValues) {
+  const fieldBlocks = new Map()
+
+  for (const field of getTemplateSteps(template).flatMap((section) => section.fields ?? [])) {
+    if (field.type !== 'repeatingPhoto') {
+      continue
+    }
+
+    const blocks = customFieldValues?.[field.dataPath]
+    const blockIds = new Set(
+      Array.isArray(blocks)
+        ? blocks
+            .filter((block) => isPlainObject(block) && typeof block.id === 'string')
+            .map((block) => block.id)
+        : [],
+    )
+    fieldBlocks.set(field.id, blockIds)
+  }
+
+  return fieldBlocks
 }
 
 function templateHasProductField(template) {
@@ -1230,6 +1295,24 @@ function getReportFieldValue(draft, photos, field, firstPhotoFieldId) {
       (photo) =>
         photo.templateFieldId === field.id ||
         (!photo.templateFieldId && field.id === firstPhotoFieldId),
+    )
+  }
+
+  if (field.type === 'repeatingPhoto') {
+    const blocks = draft.customFieldValues?.[field.dataPath]
+    const blockIds = new Set(
+      Array.isArray(blocks)
+        ? blocks
+            .filter((block) => isPlainObject(block) && typeof block.id === 'string')
+            .map((block) => block.id)
+        : [],
+    )
+
+    return photos.filter(
+      (photo) =>
+        photo.templateFieldId === field.id &&
+        photo.repeatingPhotoBlockId &&
+        blockIds.has(photo.repeatingPhotoBlockId),
     )
   }
 
@@ -1435,6 +1518,7 @@ function validateTemplateSections(value) {
     'table',
     'calculated',
     'photo',
+    'repeatingPhoto',
     'signature',
   ])
 

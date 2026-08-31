@@ -76,6 +76,7 @@ export type DocumentTemplateFieldType =
   | 'table'
   | 'calculated'
   | 'photo'
+  | 'repeatingPhoto'
   | 'signature'
 
 export type DocumentTemplateFieldWidth = 'half' | 'full'
@@ -241,10 +242,16 @@ export interface DocumentTemplateSnapshot {
 
 export type DocumentTemplateScalarValue = string | number | boolean
 export type DocumentTemplateTableValue = Record<string, Record<string, DocumentTemplateScalarValue>>
+export interface RepeatingPhotoBlockValue {
+  id: string
+  name: string
+  sortOrder: number
+}
 export type DocumentTemplateFieldValue =
   | DocumentTemplateScalarValue
   | string[]
   | DocumentTemplateTableValue
+  | RepeatingPhotoBlockValue[]
 
 export interface ReportMainInfo {
   orderNumber: string
@@ -336,6 +343,7 @@ export interface ReportDraft extends SyncableEntity {
 export interface ProductPhoto extends SyncableEntity {
   draftId: string
   templateFieldId?: string
+  repeatingPhotoBlockId?: string
   category: ReportPhotoCategory
   fileName: string
   mimeType: string
