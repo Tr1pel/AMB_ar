@@ -9,20 +9,9 @@ const authStore = useAuthStore()
 const router = useRouter()
 const loginNumber = ref('')
 const password = ref('')
-const selectedDemoRole = ref<AccountRole | null>(null)
 
 async function handleSignIn(): Promise<void> {
   const account = await authStore.signIn(loginNumber.value, password.value)
-
-  if (account) {
-    await goToWorkspace(account.role)
-  }
-}
-
-async function handleDemoSignIn(role: AccountRole): Promise<void> {
-  selectedDemoRole.value = role
-  const account = await authStore.signInAsRole(role)
-  selectedDemoRole.value = null
 
   if (account) {
     await goToWorkspace(account.role)
@@ -36,39 +25,19 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
 
 <template>
   <main class="login-page">
-    <section class="login-panel app-card">
-      <header class="login-heading">
+    <div class="login-content">
+      <div class="login-logo-area">
         <span class="login-brand">
           <img src="/runash-logo.png" alt="Рунаш" />
         </span>
-        <h1>Вход</h1>
-      </header>
-
-      <div class="role-actions" aria-label="Демо-вход">
-        <button
-          class="role-button role-button--primary"
-          type="button"
-          :disabled="authStore.isLoading"
-          @click="handleDemoSignIn('worker')"
-        >
-          <span class="role-button__icon">И</span>
-          <strong>{{ selectedDemoRole === 'worker' ? 'Открываем...' : 'Инспектор ОКК' }}</strong>
-        </button>
-
-        <button
-          class="role-button"
-          type="button"
-          :disabled="authStore.isLoading"
-          @click="handleDemoSignIn('admin')"
-        >
-          <span class="role-button__icon">А</span>
-          <strong>{{ selectedDemoRole === 'admin' ? 'Открываем...' : 'Администратор' }}</strong>
-        </button>
       </div>
 
-      <div class="login-divider"><span>или по номеру и паролю</span></div>
+      <section class="login-panel app-card">
+        <header class="login-heading">
+          <h1>Вход</h1>
+        </header>
 
-      <form class="login-form" @submit.prevent="handleSignIn">
+        <form class="login-form" @submit.prevent="handleSignIn">
         <label class="field-label" for="loginNumber">
           Номер сотрудника
           <input
@@ -93,12 +62,13 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
           />
         </label>
         <button class="primary-button" type="submit" :disabled="authStore.isLoading">
-          {{ authStore.isLoading && !selectedDemoRole ? 'Проверяем...' : 'Войти' }}
+          {{ authStore.isLoading ? 'Проверяем...' : 'Войти' }}
         </button>
-      </form>
+        </form>
 
-      <p v-if="authStore.errorMessage" class="error-message">{{ authStore.errorMessage }}</p>
-    </section>
+        <p v-if="authStore.errorMessage" class="error-message">{{ authStore.errorMessage }}</p>
+      </section>
+    </div>
   </main>
 </template>
 
@@ -397,8 +367,20 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
     var(--color-background);
 }
 
-.login-panel {
+.login-content {
+  display: grid;
   width: min(100%, 480px);
+}
+
+.login-logo-area {
+  display: grid;
+  width: 100%;
+  justify-items: center;
+  padding-bottom: 16px;
+}
+
+.login-panel {
+  width: 100%;
   gap: 18px;
   padding: 28px;
 }
@@ -406,19 +388,21 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
 .login-heading {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
+  justify-content: center;
 }
 
 .login-brand {
-  width: 180px;
+  display: block;
+  width: 100%;
   border-radius: 9px;
-  padding: 6px 10px;
+  padding: 10px 14px;
   background: var(--color-primary);
 }
 
 .login-brand img {
-  width: 100%;
+  display: block;
+  width: min(100%, 260px);
+  margin-inline: auto;
 }
 
 .login-heading h1 {
@@ -453,8 +437,8 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
     padding: 18px;
   }
 
-  .login-brand {
-    width: 145px;
+  .login-brand img {
+    width: min(100%, 220px);
   }
 
   .login-heading h1 {
@@ -487,8 +471,11 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
     padding: 14px;
   }
 
+  .login-brand img {
+    width: min(100%, 190px);
+  }
+
   .login-brand {
-    width: 132px;
     padding-block: 4px;
   }
 

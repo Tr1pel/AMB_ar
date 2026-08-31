@@ -1965,8 +1965,8 @@ function formatTime(timestamp: number): string {
 
 .schema-tabs .schema-tabs__button--active {
   color: #fff;
-  background: #175b2a;
-  border-color: #175b2a;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .schema-tabs .schema-tabs__button--active small {

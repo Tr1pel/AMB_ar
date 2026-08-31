@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 
 import ConfirmationDialog from '@/components/ui/ConfirmationDialog.vue'
 import LocaleSwitcher from '@/components/ui/LocaleSwitcher.vue'
+import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import { useAuthStore } from '@/stores/auth.store'
 import { useSyncStore } from '@/stores/sync.store'
 
@@ -17,6 +18,7 @@ interface NavigationItem {
 }
 
 const route = useRoute()
+const router = useRouter()
 const authStore = useAuthStore()
 const syncStore = useSyncStore()
 
@@ -151,7 +153,29 @@ function isMobileNavItemActive(item: NavigationItem): boolean {
 }
 
 async function signOut(): Promise<void> {
+  const shouldStartSignOut = await requestConfirmation({
+    title: 'Выйти из аккаунта?',
+    message: 'Вы завершите текущую сессию на этом устройстве.',
+    confirmLabel: 'Продолжить',
+  })
+
+  if (!shouldStartSignOut) {
+    return
+  }
+
+  const shouldSignOut = await requestConfirmation({
+    title: 'Подтвердите выход',
+    message: 'После выхода потребуется снова ввести номер сотрудника и пароль.',
+    confirmLabel: 'Выйти',
+    destructive: true,
+  })
+
+  if (!shouldSignOut) {
+    return
+  }
+
   await authStore.signOut()
+  await router.push({ name: 'login' })
 }
 </script>
 
@@ -196,7 +220,7 @@ async function signOut(): Promise<void> {
           <strong>{{ authStore.currentAccount?.fullName }}</strong>
           <small>{{ roleLabel }}</small>
         </div>
-        <RouterLink to="/login" title="Выйти" aria-label="Выйти" @click="signOut">
+        <RouterLink to="/login" title="Выйти" aria-label="Выйти" @click.prevent="signOut">
           <span class="logout-svg-icon" aria-hidden="true" />
         </RouterLink>
       </div>
@@ -243,7 +267,7 @@ async function signOut(): Promise<void> {
             <strong>{{ authStore.currentAccount?.fullName }}</strong>
             <small>{{ roleLabel }}</small>
           </div>
-          <RouterLink class="mobile-account__logout" to="/login" @click="signOut">
+          <RouterLink class="mobile-account__logout" to="/login" @click.prevent="signOut">
             <span class="logout-svg-icon" aria-hidden="true" />
             Выйти
           </RouterLink>
