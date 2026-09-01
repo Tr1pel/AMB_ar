@@ -113,6 +113,106 @@ test('worker submits a report and admin processes server-persisted binaries', as
   })
   assert.equal(createdAccountLogin.status, 200)
 
+  const editorFlowTemplate = createTemplate()
+  editorFlowTemplate.id = 'document-template-editor-flow'
+  editorFlowTemplate.name = 'Макет из редактора'
+  editorFlowTemplate.status = 'draft'
+  delete editorFlowTemplate.publishedAt
+  editorFlowTemplate.sections = [{ ...editorFlowTemplate.sections[0], fields: [] }]
+  editorFlowTemplate.inputSchema = { version: 1, steps: editorFlowTemplate.sections }
+  editorFlowTemplate.renderSpec = {
+    ...editorFlowTemplate.renderSpec,
+    sections: editorFlowTemplate.renderSpec.sections.map((section) => ({ ...section, fields: [] })),
+  }
+
+  const createdEditorDraft = await request(
+    port,
+    '/api/document-templates/document-template-editor-flow',
+    {
+      method: 'PUT',
+      accountId: admin.body.id,
+      body: editorFlowTemplate,
+    },
+  )
+  assert.equal(createdEditorDraft.status, 201)
+  assert.equal(createdEditorDraft.body.status, 'draft')
+
+  const rejectedEmptyPublication = await request(
+    port,
+    '/api/document-templates/document-template-editor-flow',
+    {
+      method: 'PUT',
+      accountId: admin.body.id,
+      body: { ...createdEditorDraft.body, status: 'active' },
+    },
+  )
+  assert.equal(rejectedEmptyPublication.status, 400)
+  assert.match(rejectedEmptyPublication.body.message, /хотя бы одно поле/)
+
+  const savedEditorDraft = await request(
+    port,
+    '/api/document-templates/document-template-editor-flow',
+    {
+      method: 'PUT',
+      accountId: admin.body.id,
+      body: {
+        ...createdEditorDraft.body,
+        inputSchema: {
+          version: 1,
+          steps: [
+            {
+              ...createdEditorDraft.body.sections[0],
+              fields: [createTemplateField('editor-flow-field', 'custom.editorFlow', 'Поле', 1)],
+            },
+          ],
+        },
+        renderSpec: {
+          ...createdEditorDraft.body.renderSpec,
+          sections: createdEditorDraft.body.renderSpec.sections.map((section) => ({
+            ...section,
+            fields: [
+              {
+                dataPath: 'custom.editorFlow',
+                label: 'Поле',
+                width: 'full',
+                display: 'value',
+                hideWhenEmpty: false,
+                hidden: false,
+              },
+            ],
+          })),
+        },
+      },
+    },
+  )
+  assert.equal(savedEditorDraft.status, 200)
+  assert.equal(savedEditorDraft.body.status, 'draft')
+  assert.equal(savedEditorDraft.body.sections[0].fields[0].label, 'Поле')
+
+  const publishedEditorTemplate = await request(
+    port,
+    '/api/document-templates/document-template-editor-flow',
+    {
+      method: 'PUT',
+      accountId: admin.body.id,
+      body: { ...savedEditorDraft.body, status: 'active', publishedAt: Date.now() },
+    },
+  )
+  assert.equal(publishedEditorTemplate.status, 200)
+  assert.equal(publishedEditorTemplate.body.status, 'active')
+  assert.ok(publishedEditorTemplate.body.publishedAt)
+
+  const availableTemplates = await request(port, '/api/document-templates', {
+    accountId: worker.body.id,
+  })
+  assert.equal(availableTemplates.status, 200)
+  assert.equal(
+    availableTemplates.body.some(
+      (template) => template.id === 'document-template-editor-flow' && template.status === 'active',
+    ),
+    true,
+  )
+
   const logout = await request(port, '/api/auth/logout', {
     method: 'POST',
     accountId: createdAccount.body.id,
