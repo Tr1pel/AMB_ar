@@ -1650,6 +1650,90 @@ function formatTime(timestamp: number): string {
                   {{ option.label }}
                 </option>
               </select>
+              <label v-else-if="selectedTemplateField.type === 'checkbox'" class="preview-boolean-field">
+                <input type="checkbox" disabled />
+                <span data-i18n-ignore>
+                  {{ getEditorFieldText(selectedTemplateField, 'placeholder') || 'Подтверждаю' }}
+                </span>
+              </label>
+              <div
+                v-else-if="selectedTemplateField.type === 'radio' || selectedTemplateField.type === 'passFail'"
+                class="preview-choice-card-grid"
+              >
+                <label
+                  v-for="option in selectedTemplateField.options.length
+                    ? selectedTemplateField.options
+                    : selectedTemplateField.type === 'passFail'
+                      ? [
+                          { id: 'pass', label: 'Соответствует' },
+                          { id: 'fail', label: 'Не соответствует' },
+                        ]
+                      : []"
+                  :key="option.id"
+                  class="preview-choice-card"
+                >
+                  <input type="radio" :name="`preview-${selectedTemplateField.id}`" disabled />
+                  <span data-i18n-ignore>{{ option.label }}</span>
+                </label>
+                <small v-if="!selectedTemplateField.options.length && selectedTemplateField.type === 'radio'">
+                  Добавьте варианты, чтобы увидеть их здесь
+                </small>
+              </div>
+              <output v-else-if="selectedTemplateField.type === 'calculated'" class="preview-calculated-field">
+                Будет рассчитано автоматически
+                <small v-if="selectedTemplateField.unit" data-i18n-ignore>
+                  {{ selectedTemplateField.unit }}
+                </small>
+              </output>
+              <div v-else-if="selectedTemplateField.type === 'measurement'" class="preview-measurement-field">
+                <div v-if="selectedTemplateField.standardValue" class="preview-measurement-field__standard">
+                  Норма: <strong data-i18n-ignore>{{ selectedTemplateField.standardValue }}</strong>
+                </div>
+                <span class="preview-input-with-unit">
+                  <input
+                    disabled
+                    type="number"
+                    :placeholder="
+                      getEditorFieldText(selectedTemplateField, 'placeholder') || 'Введите значение'
+                    "
+                    :data-i18n-ignore="
+                      getEditorFieldText(selectedTemplateField, 'placeholder') ? '' : undefined
+                    "
+                  />
+                  <small v-if="selectedTemplateField.unit" data-i18n-ignore>
+                    {{ selectedTemplateField.unit }}
+                  </small>
+                </span>
+              </div>
+              <div v-else-if="selectedTemplateField.type === 'table'" class="preview-table-wrap">
+                <table class="preview-table">
+                  <thead>
+                    <tr>
+                      <th>Проверка</th>
+                      <th v-for="column in selectedTemplateField.tableColumns ?? []" :key="column.id">
+                        {{ column.label }}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in selectedTemplateField.tableRows ?? []" :key="row.id">
+                      <th>{{ row.label }}</th>
+                      <td v-for="column in selectedTemplateField.tableColumns ?? []" :key="column.id">
+                        <input v-if="column.type === 'checkbox'" type="checkbox" disabled />
+                        <select v-else-if="column.type === 'select'" disabled>
+                          <option>Выберите</option>
+                        </select>
+                        <input v-else disabled :type="column.type === 'number' ? 'number' : 'text'" />
+                      </td>
+                    </tr>
+                    <tr v-if="!(selectedTemplateField.tableRows?.length)">
+                      <td :colspan="(selectedTemplateField.tableColumns?.length ?? 0) + 1">
+                        Добавьте строки проверки
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
               <input
                 v-else-if="selectedTemplateField.type === 'signature'"
                 disabled
@@ -1676,6 +1760,8 @@ function formatTime(timestamp: number): string {
                     ? 'number'
                     : selectedTemplateField.type === 'date'
                       ? 'date'
+                      : selectedTemplateField.type === 'time'
+                        ? 'time'
                       : 'text'
                 "
                 :placeholder="
@@ -3090,6 +3176,104 @@ function formatTime(timestamp: number): string {
 
 .field-preview textarea {
   min-height: 70px;
+}
+
+.preview-boolean-field,
+.preview-choice-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-preview .preview-boolean-field input,
+.field-preview .preview-choice-card input,
+.field-preview .preview-table input[type='checkbox'] {
+  width: 16px;
+  min-height: 16px;
+  padding: 0;
+  accent-color: var(--color-primary);
+}
+
+.preview-choice-card-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.preview-choice-card {
+  min-height: 38px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--color-surface);
+}
+
+.preview-calculated-field,
+.preview-measurement-field {
+  display: grid;
+  gap: 6px;
+  min-height: 42px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.preview-measurement-field__standard {
+  font-size: 0.69rem;
+}
+
+.preview-input-with-unit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-input-with-unit input {
+  min-width: 0;
+}
+
+.preview-input-with-unit small {
+  white-space: nowrap;
+}
+
+.preview-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.preview-table {
+  width: 100%;
+  min-width: 340px;
+  border-collapse: collapse;
+  color: var(--color-text);
+  font-size: 0.66rem;
+}
+
+.preview-table th,
+.preview-table td {
+  border-bottom: 1px solid var(--color-border);
+  padding: 6px;
+  text-align: left;
+}
+
+.preview-table th {
+  font-weight: 800;
+}
+
+.preview-table tr:last-child th,
+.preview-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.field-preview .preview-table input,
+.field-preview .preview-table select {
+  min-height: 28px;
+  padding: 4px 6px;
+  font-size: 0.65rem;
 }
 
 .photo-placeholder {
