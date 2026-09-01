@@ -189,7 +189,7 @@ const passFailOptions = [
 export const ICEBERG_DOCUMENT_TEMPLATE_ID = 'document-template-iceberg-quality-inspection'
 
 const trilingual = (english: string, farsi: string, russian: string): string =>
-  `${english} / ${farsi} / ${russian}`
+  `${english} / ${russian} / ${farsi}`
 
 function createCustomTemplateField(
   id: string,

@@ -7,6 +7,7 @@ import PDFDocument from 'pdfkit/js/pdfkit.standalone.js'
 import {
   generateTemplateReportPdf,
   getPdfFieldLabel,
+  getMultilingualText,
 } from '../src/shared/reports/branded-report-pdf-core.mjs'
 
 test('the browser PDFKit bundle generates the shared report layout', async () => {
@@ -95,7 +96,24 @@ test('the browser PDFKit bundle generates the shared report layout', async () =>
   assert.equal(new TextDecoder().decode(bytes.subarray(0, 5)), '%PDF-')
   assert.equal(
     getPdfFieldLabel(section.fields[0], template.renderSpec.sections[0].fields[0]),
-    'Продукт / Product / محصول',
+    'Product / Продукт / محصول',
+  )
+
+  assert.equal(
+    getMultilingualText(
+      {
+        ru: { name: 'Салат Айсберг !!!' },
+        en: { name: 'Iceberg Lettuce' },
+        fa: { name: 'کاهو آیسبرگ' },
+      },
+      'name',
+    ),
+    'Iceberg Lettuce / Салат Айсберг !!! / کاهو آیسبرگ',
+  )
+
+  assert.equal(
+    getMultilingualText({}, 'name', 'Iceberg Lettuce / کاهو آیسبرگ / Салат Айсберг'),
+    'Iceberg Lettuce / Салат Айсберг / کاهو آیسبرگ',
   )
 })
 

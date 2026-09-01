@@ -26,8 +26,8 @@ export const DOCUMENT_TEMPLATE_LOCALES: ReadonlyArray<{
   shortLabel: string
   dir: 'ltr' | 'rtl'
 }> = [
-  { value: 'ru', label: 'Русский', shortLabel: 'RU', dir: 'ltr' },
   { value: 'en', label: 'English', shortLabel: 'EN', dir: 'ltr' },
+  { value: 'ru', label: 'Русский', shortLabel: 'RU', dir: 'ltr' },
   { value: 'fa', label: 'فارسی', shortLabel: 'FA', dir: 'rtl' },
 ]
 
@@ -194,7 +194,7 @@ export function getMultilingualFieldText(
 ): string {
   const translations =
     field.translations ?? createFieldTranslations(field.label, field.placeholder, field.helpText)
-  const values = (['ru', 'en', 'fa'] as const)
+  const values = (['en', 'ru', 'fa'] as const)
     .map((locale) => translations[locale]?.[key]?.trim())
     .filter((value): value is string => Boolean(value))
 
@@ -245,15 +245,24 @@ function inferLegacyText(value: string): InferredLocalizedText | null {
     .map((part) => part.trim())
     .filter(Boolean)
   const farsiIndex = parts.findIndex((part) => /[\u0600-\u06ff]/u.test(part))
+  const russianIndex = parts.findIndex((part) => /[\u0400-\u04ff]/u.test(part))
 
-  if (parts.length < 3 || farsiIndex <= 0 || farsiIndex >= parts.length - 1) {
+  if (parts.length < 3 || farsiIndex <= 0 || russianIndex <= 0 || farsiIndex === russianIndex) {
     return null
   }
 
+  if (farsiIndex < russianIndex) {
+    return {
+      ru: parts.slice(russianIndex).join(' / '),
+      en: parts.slice(0, farsiIndex).join(' / '),
+      fa: parts.slice(farsiIndex, russianIndex).join(' / '),
+    }
+  }
+
   return {
-    ru: parts.slice(farsiIndex + 1).join(' / '),
-    en: parts.slice(0, farsiIndex).join(' / '),
-    fa: parts[farsiIndex] ?? '',
+    ru: parts.slice(russianIndex, farsiIndex).join(' / '),
+    en: parts.slice(0, russianIndex).join(' / '),
+    fa: parts.slice(farsiIndex).join(' / '),
   }
 }
 
@@ -338,7 +347,7 @@ function getMultilingualText<
   key: keyof T,
   legacyValue: string,
 ): string {
-  const values = (['ru', 'en', 'fa'] as const)
+  const values = (['en', 'ru', 'fa'] as const)
     .map((locale) => String(translations?.[locale]?.[key] ?? '').trim())
     .filter(Boolean)
 

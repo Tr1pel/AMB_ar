@@ -22,6 +22,8 @@ import {
   ensureTemplateTranslations,
   getLocalizedFieldText,
   getLocalizedTemplateText,
+  getMultilingualFieldText,
+  getMultilingualSectionText,
 } from '@/shared/templates/document-template-localization'
 import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import { useDocumentTemplateStore } from '@/stores/document-template.store'
@@ -117,6 +119,22 @@ function getTemplateDescription(template: DocumentTemplate): string {
   return getLocalizedTemplateText(template, 'description', currentLocale.value)
 }
 
+function restartLocalizedDetailsAnimation(event: Event): void {
+  const details = event.currentTarget
+
+  if (!(details instanceof HTMLDetailsElement)) {
+    return
+  }
+
+  details.classList.remove('localized-field-details--revealing')
+
+  if (details.open) {
+    // Resetting the animation makes every subsequent opening as smooth as the first one.
+    void details.offsetWidth
+    details.classList.add('localized-field-details--revealing')
+  }
+}
+
 const fieldTypeOptions: Array<{ value: DocumentTemplateFieldType; label: string }> = [
   { value: 'text', label: 'Текст' },
   { value: 'number', label: 'Число' },
@@ -188,15 +206,15 @@ function openDraftInEditor(template: DocumentTemplate): void {
   const sections = getTemplateInputSections(editableTemplate)
   editableTemplate.inputSchema = createInputSchema(sections)
   editableTemplate.sections = editableTemplate.inputSchema.steps
-  editableTemplate.renderSpec = getTemplateRenderSpec(editableTemplate)
-  editorTemplate.value = editableTemplate
-  editorTemplate.value.sections.forEach((section) => {
+  editableTemplate.sections.forEach((section) => {
     ensureSectionTranslations(section)
     section.fields.forEach((field) => {
       field.options ??= []
       ensureFieldTranslations(field)
     })
   })
+  editableTemplate.renderSpec = getTemplateRenderSpec(editableTemplate)
+  editorTemplate.value = editableTemplate
   selectedSectionId.value = editorTemplate.value.sections[0]?.id ?? null
   selectedFieldId.value = null
   expandedRenderSectionId.value = null
@@ -549,6 +567,12 @@ function getRenderInputSection(
   )
 }
 
+function getPrintedSectionTitle(renderSection: DocumentRenderSectionSpec): string {
+  const inputSection = getRenderInputSection(renderSection)
+
+  return inputSection ? getMultilingualSectionText(inputSection, 'title') : renderSection.title
+}
+
 function getRenderInputField(
   renderSection: DocumentRenderSectionSpec,
   renderField: DocumentRenderFieldSpec,
@@ -556,6 +580,15 @@ function getRenderInputField(
   return getRenderInputSection(renderSection)?.fields.find(
     (field) => field.dataPath === renderField.dataPath,
   )
+}
+
+function getPrintedFieldLabel(
+  renderSection: DocumentRenderSectionSpec,
+  renderField: DocumentRenderFieldSpec,
+): string {
+  const inputField = getRenderInputField(renderSection, renderField)
+
+  return inputField ? getMultilingualFieldText(inputField, 'label') : (renderField.label ?? '')
 }
 
 function moveRenderSection(renderSectionId: string, direction: -1 | 1): void {
@@ -1008,8 +1041,8 @@ function formatTime(timestamp: number): string {
             </label>
           </div>
         </section>
-        <details class="localized-field-details">
-          <summary>Описание макета</summary>
+        <section class="localized-field-editor">
+          <strong>Описание макета</strong>
           <div class="localized-field-grid">
             <label
               v-for="locale in DOCUMENT_TEMPLATE_LOCALES"
@@ -1026,7 +1059,7 @@ function formatTime(timestamp: number): string {
               />
             </label>
           </div>
-        </details>
+        </section>
         <dl>
           <div>
             <dt>Разделов</dt>
@@ -1092,7 +1125,7 @@ function formatTime(timestamp: number): string {
                   </label>
                 </div>
               </section>
-              <details class="localized-field-details">
+              <details class="localized-field-details" @toggle="restartLocalizedDetailsAnimation">
                 <summary>Описание раздела</summary>
                 <div class="localized-field-grid">
                   <label
@@ -1503,6 +1536,7 @@ function formatTime(timestamp: number): string {
               v-if="selectedTemplateField.type !== 'signature'"
               :key="`${selectedTemplateField.id}-placeholder`"
               class="localized-field-details"
+              @toggle="restartLocalizedDetailsAnimation"
             >
               <summary>Подсказка внутри поля</summary>
               <div class="localized-field-grid">
@@ -1526,7 +1560,11 @@ function formatTime(timestamp: number): string {
                 </label>
               </div>
             </details>
-            <details :key="`${selectedTemplateField.id}-help`" class="localized-field-details">
+            <details
+              :key="`${selectedTemplateField.id}-help`"
+              class="localized-field-details"
+              @toggle="restartLocalizedDetailsAnimation"
+            >
               <summary>Пояснение</summary>
               <div class="localized-field-grid">
                 <label
@@ -1701,7 +1739,12 @@ function formatTime(timestamp: number): string {
               <span class="render-section-card__number">{{ index + 1 }}</span>
               <label class="field-label render-section-title">
                 Заголовок печатного раздела
-                <input v-model="renderSection.title" class="field-control" />
+                <input
+                  :value="getPrintedSectionTitle(renderSection)"
+                  class="field-control"
+                  readonly
+                  aria-readonly="true"
+                />
               </label>
               <span class="render-section-summary">
                 {{ getVisibleRenderFieldCount(renderSection) }} / {{ renderSection.fields.length }}
@@ -1766,7 +1809,7 @@ function formatTime(timestamp: number): string {
               <div class="render-field-list">
                 <div class="render-field-list__heading">
                   <strong>Поля в PDF</strong>
-                  <small>Меняйте порядок, подпись, ширину и способ отображения.</small>
+                  <small>Меняйте порядок, ширину и способ отображения.</small>
                 </div>
                 <div
                   v-for="(renderField, fieldIndex) in renderSection.fields"
@@ -1795,9 +1838,10 @@ function formatTime(timestamp: number): string {
                   <label class="field-label render-field-label">
                     Подпись в PDF
                     <input
-                      v-model="renderField.label"
+                      :value="getPrintedFieldLabel(renderSection, renderField)"
                       class="field-control"
-                      :placeholder="getRenderInputField(renderSection, renderField)?.label"
+                      readonly
+                      aria-readonly="true"
                       data-i18n-ignore
                     />
                     <small>
@@ -2111,7 +2155,7 @@ function formatTime(timestamp: number): string {
 
 .builder-meta {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(300px, 1.4fr) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
   align-items: end;
   gap: 12px;
   padding: 14px;
@@ -2811,6 +2855,29 @@ function formatTime(timestamp: number): string {
   border-top: 1px solid var(--color-border);
   padding: 10px;
   background: var(--color-surface-muted);
+}
+
+.localized-field-details--revealing > .localized-field-grid {
+  animation: localized-field-details-reveal 180ms ease-out both;
+  transform-origin: top;
+}
+
+@keyframes localized-field-details-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-5px) scaleY(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .localized-field-details--revealing > .localized-field-grid {
+    animation: none;
+  }
 }
 
 .property-textarea {

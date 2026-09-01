@@ -8,7 +8,13 @@ import type {
   DocumentTemplateSection,
   DocumentTemplateSnapshot,
 } from '@/types/report'
-type TemplateSchemaSource = Pick<DocumentTemplate, 'id' | 'name' | 'sections' | 'inputSchema' | 'renderSpec'> | DocumentTemplateSnapshot
+import {
+  getMultilingualFieldText,
+  getMultilingualSectionText,
+} from '@/shared/templates/document-template-localization'
+type TemplateSchemaSource =
+  | Pick<DocumentTemplate, 'id' | 'name' | 'sections' | 'inputSchema' | 'renderSpec'>
+  | DocumentTemplateSnapshot
 
 export function getTemplateInputSections(
   template: TemplateSchemaSource | null | undefined,
@@ -37,9 +43,7 @@ export function createDefaultRenderSpec(
   }
 }
 
-export function getTemplateRenderSpec(
-  template: TemplateSchemaSource,
-): DocumentRenderSpec {
+export function getTemplateRenderSpec(template: TemplateSchemaSource): DocumentRenderSpec {
   return syncRenderSpec(
     template.renderSpec ??
       createDefaultRenderSpec(getTemplateInputSections(template), template.name),
@@ -88,11 +92,12 @@ export function syncRenderSpec(
         ...existing,
         id: existing?.id ?? `render-${section.id}`,
         inputSectionId: section.id,
-        title: existing?.title?.trim() || section.title,
+        title: getMultilingualSectionText(section, 'title'),
         fields: orderedFields.map((field) => ({
           ...createRenderField(field),
           ...existingFields.get(field.dataPath),
           dataPath: field.dataPath,
+          label: getMultilingualFieldText(field, 'label'),
         })),
       }
     }),
@@ -103,7 +108,7 @@ function createRenderSection(section: DocumentTemplateSection): DocumentRenderSe
   return {
     id: `render-${section.id}`,
     inputSectionId: section.id,
-    title: section.title,
+    title: getMultilingualSectionText(section, 'title'),
     pageBreakBefore: false,
     columns: section.fields.length > 8 ? 2 : 1,
     showDescription: true,
@@ -115,7 +120,7 @@ function createRenderSection(section: DocumentTemplateSection): DocumentRenderSe
 function createRenderField(field: DocumentTemplateField): DocumentRenderFieldSpec {
   return {
     dataPath: field.dataPath,
-    label: field.label,
+    label: getMultilingualFieldText(field, 'label'),
     width: field.width,
     display:
       field.type === 'table'

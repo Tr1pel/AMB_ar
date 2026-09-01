@@ -10,6 +10,12 @@ const TEXT_COLOR = '#172019'
 const MUTED_TEXT = '#556259'
 const REGULAR_FONT = 'DejaVuSans'
 const BOLD_FONT = 'DejaVuSansBold'
+const HEADER_TITLE_Y = 38
+const HEADER_PRODUCT_Y = 62
+const LOGO_X = 20
+const LOGO_Y = 20
+const LOGO_MAX_WIDTH = 122
+const LOGO_MAX_HEIGHT = 54
 
 export async function generateTemplateReportPdf({
   report,
@@ -62,8 +68,9 @@ export async function generateTemplateReportPdf({
   const inputSectionById = new Map(inputSections.map((section) => [section.id, section]))
   const photoFields = []
   const templateSubtitle = templateDescription || templateTitle
+  const headerProductName = templateTitle || report.productName || report.mainInfo?.productName
 
-  beginPage(state, report, documentTitle, templateSubtitle, preparedLogo)
+  beginPage(state, report, documentTitle, templateSubtitle, preparedLogo, headerProductName)
 
   for (const renderSection of renderSpec.sections) {
     if (renderSection.hidden) {
@@ -246,13 +253,20 @@ function createFieldBlocks(report, field, spec, section) {
 
   const rawValue = getRawFieldValue(report, field)
   const table = rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue) ? rawValue : {}
-  const columns = field.tableColumns ?? []
+  const columns = (field.tableColumns ?? []).map((column) => ({
+    ...column,
+    label: normalizeMultilingualPdfText(column.label),
+  }))
   const rows = (field.tableRows ?? []).map((row) => ({
-    label: row.label,
+    label: normalizeMultilingualPdfText(row.label),
     values: columns.map((column) => {
       const cellValue = table[row.id]?.[column.id]
       const formatted =
-        typeof cellValue === 'boolean' ? (cellValue ? '☒' : '☐') : String(cellValue ?? '').trim()
+        typeof cellValue === 'boolean'
+          ? cellValue
+            ? '☒'
+            : '☐'
+          : normalizeMultilingualPdfText(String(cellValue ?? '').trim())
 
       return formatted ? `${formatted}${column.unit ? ` ${column.unit}` : ''}` : ''
     }),
@@ -268,15 +282,15 @@ function createFieldBlocks(report, field, spec, section) {
 
 export function getPdfFieldLabel(field, spec) {
   const translations = field?.translations
-  const localizedLabels = ['ru', 'en', 'fa']
+  const localizedLabels = ['en', 'ru', 'fa']
     .map((locale) => String(translations?.[locale]?.label ?? '').trim())
     .filter(Boolean)
 
   if (localizedLabels.length) {
     const uniqueLocalizedLabels = [...new Set(localizedLabels)]
     const multilingualLabel = uniqueLocalizedLabels.join(' / ')
-    const renderLabel = String(spec?.label ?? '').trim()
-    const legacyLabel = String(field?.label ?? '').trim()
+    const renderLabel = normalizeMultilingualPdfText(String(spec?.label ?? '').trim())
+    const legacyLabel = normalizeMultilingualPdfText(String(field?.label ?? '').trim())
 
     if (
       renderLabel &&
@@ -290,7 +304,9 @@ export function getPdfFieldLabel(field, spec) {
     return multilingualLabel
   }
 
-  return String(spec?.label ?? '').trim() || String(field?.label ?? '').trim()
+  return normalizeMultilingualPdfText(
+    String(spec?.label ?? '').trim() || String(field?.label ?? '').trim(),
+  )
 }
 
 function groupFieldBlocks(blocks, columns) {
@@ -596,7 +612,7 @@ function ensureSpaceForSection(state, report, title, templateName, logo) {
   beginPage(state, report, title, templateName, logo)
 }
 
-function beginPage(state, report, documentTitle, templateName, logo) {
+function beginPage(state, report, documentTitle, templateName, logo, headerProductName) {
   const { document } = state
   document.addPage({ size: 'A4', margin: 0 })
   const isFirstPage = state.pageCount === 0
@@ -609,8 +625,8 @@ function beginPage(state, report, documentTitle, templateName, logo) {
   }
 
   if (logo) {
-    document.image(logo, PAGE_MARGIN, 18, {
-      fit: [137, 60],
+    document.image(logo, LOGO_X, LOGO_Y, {
+      fit: [LOGO_MAX_WIDTH, LOGO_MAX_HEIGHT],
       align: 'left',
       valign: 'center',
     })
@@ -620,24 +636,27 @@ function beginPage(state, report, documentTitle, templateName, logo) {
   }
 
   const title = documentTitle || 'QUALITY INSPECTION REPORT'
-  const titleHeight = Math.min(34, measureText(document, title, 330, 14.5, true))
-  const productY = Math.max(44, 20 + titleHeight + 2)
+  const titleHeight = Math.min(34, measureText(document, title, CONTENT_WIDTH, 14.5, true))
+  const productY = Math.max(HEADER_PRODUCT_Y, HEADER_TITLE_Y + titleHeight + 2)
 
-  drawText(document, title, 205, 20, 14.5, DARK_GREEN, true, {
-    width: 352,
+  drawText(document, title, PAGE_MARGIN, HEADER_TITLE_Y, 14.5, DARK_GREEN, true, {
+    width: CONTENT_WIDTH,
     height: 34,
     align: 'center',
     ellipsis: true,
   })
   drawText(
     document,
-    report.productName || report.mainInfo?.productName || 'Отчёт о контроле качества',
-    205,
+    headerProductName ||
+      report.productName ||
+      report.mainInfo?.productName ||
+      'Отчёт о контроле качества',
+    PAGE_MARGIN,
     productY,
     8.5,
     TEXT_COLOR,
     true,
-    { width: 352, height: 18, align: 'center', ellipsis: true },
+    { width: CONTENT_WIDTH, height: 18, align: 'center', ellipsis: true },
   )
   drawText(
     document,
@@ -801,7 +820,7 @@ function formatFieldValue(report, field, display) {
     const result = formatValue(value, false)
     return [
       result && `${result}${field.unit ? ` ${field.unit}` : ''}`,
-      field.standardValue && `Норма: ${field.standardValue}`,
+      field.standardValue && `Норма: ${normalizeMultilingualPdfText(field.standardValue)}`,
     ]
       .filter(Boolean)
       .join(' · ')
@@ -838,7 +857,7 @@ function getRawFieldValue(report, field) {
 
 function formatValue(value, asDate) {
   if (typeof value === 'string') {
-    return asDate ? formatDate(value) : value
+    return asDate ? formatDate(value) : normalizeMultilingualPdfText(value)
   }
 
   if (typeof value === 'number' || typeof value === 'boolean') {
@@ -846,7 +865,7 @@ function formatValue(value, asDate) {
   }
 
   if (Array.isArray(value)) {
-    return value.join(', ')
+    return value.map((item) => normalizeMultilingualPdfText(String(item ?? ''))).join(', ')
   }
 
   return ''
@@ -957,12 +976,45 @@ function getMultilingualSectionText(section, key) {
   return getMultilingualText(section?.translations, key, section?.[key])
 }
 
-function getMultilingualText(translations, key, fallback = '') {
-  const values = ['ru', 'en', 'fa']
+export function getMultilingualText(translations, key, fallback = '') {
+  const values = ['en', 'ru', 'fa']
     .map((locale) => String(translations?.[locale]?.[key] ?? '').trim())
     .filter(Boolean)
 
-  return values.length ? [...new Set(values)].join(' / ') : String(fallback ?? '').trim()
+  return values.length
+    ? [...new Set(values)].join(' / ')
+    : normalizeMultilingualPdfText(String(fallback ?? '').trim())
+}
+
+function normalizeMultilingualPdfText(value) {
+  const parts = String(value ?? '')
+    .split(' / ')
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const farsiIndex = parts.findIndex((part) => /[\u0600-\u06ff]/u.test(part))
+  const russianIndex = parts.findIndex((part) => /[\u0400-\u04ff]/u.test(part))
+
+  if (parts.length < 3 || farsiIndex <= 0 || russianIndex <= 0 || farsiIndex === russianIndex) {
+    return String(value ?? '').trim()
+  }
+
+  if (farsiIndex < russianIndex) {
+    return [
+      parts.slice(0, farsiIndex).join(' / '),
+      parts.slice(russianIndex).join(' / '),
+      parts.slice(farsiIndex, russianIndex).join(' / '),
+    ]
+      .filter(Boolean)
+      .join(' / ')
+  }
+
+  return [
+    parts.slice(0, russianIndex).join(' / '),
+    parts.slice(russianIndex, farsiIndex).join(' / '),
+    parts.slice(farsiIndex).join(' / '),
+  ]
+    .filter(Boolean)
+    .join(' / ')
 }
 
 function getTemplateRenderSpec(template) {
