@@ -240,18 +240,12 @@ function pluralize(value: number, one: string, few: string, many: string): strin
   return many
 }
 
-function getReportPlace(report: ReportDraft): string {
-  return report.mainInfo?.placeOfSurvey || 'Место не указано'
-}
-
 function getReportOrder(report: ReportDraft): string {
   return report.mainInfo?.orderNumber ? `Заказ ${report.mainInfo.orderNumber}` : 'Без номера'
 }
 
 function getReportNumber(report: ReportDraft): string {
-  return report.reportNumber?.startsWith('AMB-QC-')
-    ? report.reportNumber
-    : 'Ожидает синхронизации'
+  return report.reportNumber?.trim() || 'Ожидает синхронизации'
 }
 
 function getReportPhotoCount(report: ReportDraft): number {
@@ -461,7 +455,6 @@ function downloadBlob(blob: Blob, fileName: string): void {
             <div class="report-card__chips">
               <span>{{ getReportNumber(report) }}</span>
               <span>{{ getReportOrder(report) }}</span>
-              <span>{{ getReportPlace(report) }}</span>
               <span>{{ getReportPhotoCount(report) }} фото</span>
             </div>
           </div>

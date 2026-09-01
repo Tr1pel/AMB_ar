@@ -4,6 +4,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { currentLocale, localeTag, tForLocale } from '@/shared/i18n'
 import {
   DOCUMENT_TEMPLATE_FIELD_CATALOG,
+  isRequiredReportTemplateField,
   type DocumentTemplateFieldCatalogItem,
 } from '@/shared/constants/document-template'
 import {
@@ -351,7 +352,11 @@ function selectSection(sectionId: string): void {
 }
 
 async function removeSection(section: DocumentTemplateSection): Promise<void> {
-  if (!editorTemplate.value || editorTemplate.value.sections.length === 1) {
+  if (
+    !editorTemplate.value ||
+    editorTemplate.value.sections.length === 1 ||
+    section.fields.some((field) => isRequiredReportTemplateField(field.dataPath))
+  ) {
     return
   }
 
@@ -516,7 +521,10 @@ function removeField(fieldId: string): void {
 
   const fieldIndex = section.fields.findIndex((field) => field.id === fieldId)
 
-  if (fieldIndex < 0) {
+  if (
+    fieldIndex < 0 ||
+    isRequiredReportTemplateField(section.fields[fieldIndex]?.dataPath ?? '')
+  ) {
     return
   }
 
@@ -830,6 +838,10 @@ function getEditorFieldText(
 
 function getCatalogFieldLabel(field: DocumentTemplateFieldCatalogItem): string {
   return tForLocale(field.label, currentLocale.value)
+}
+
+function isProtectedField(field: DocumentTemplateField): boolean {
+  return isRequiredReportTemplateField(field.dataPath)
 }
 
 function createLocalId(prefix: string): string {
@@ -1163,7 +1175,10 @@ function formatTime(timestamp: number): string {
               <button
                 type="button"
                 title="Удалить раздел"
-                :disabled="editorTemplate.sections.length === 1"
+                :disabled="
+                  editorTemplate.sections.length === 1 ||
+                  selectedSection.fields.some((field) => isProtectedField(field))
+                "
                 @click="removeSection(selectedSection)"
               >
                 ×
@@ -1210,7 +1225,12 @@ function formatTime(timestamp: number): string {
                 >
                   ↓
                 </button>
-                <button type="button" title="Удалить поле" @click.stop="removeField(field.id)">
+                <button
+                  v-if="!isProtectedField(field)"
+                  type="button"
+                  title="Удалить поле"
+                  @click.stop="removeField(field.id)"
+                >
                   ×
                 </button>
               </div>
@@ -1272,6 +1292,7 @@ function formatTime(timestamp: number): string {
                   <input
                     v-model="selectedTemplateField.translations![locale.value].label"
                     class="field-control"
+                    :disabled="isProtectedField(selectedTemplateField)"
                     :lang="locale.value"
                     :dir="locale.dir"
                     :aria-label="`Название поля — ${locale.label}`"
@@ -1284,6 +1305,7 @@ function formatTime(timestamp: number): string {
               <select
                 v-model="selectedTemplateField.type"
                 class="field-control"
+                :disabled="isProtectedField(selectedTemplateField)"
                 @change="handleFieldTypeChange(selectedTemplateField)"
               >
                 <option
@@ -1613,7 +1635,11 @@ function formatTime(timestamp: number): string {
                 <strong>Обязательное поле</strong>
                 <small>Без значения отчет нельзя завершить</small>
               </span>
-              <input v-model="selectedTemplateField.required" type="checkbox" />
+              <input
+                v-model="selectedTemplateField.required"
+                type="checkbox"
+                :disabled="isProtectedField(selectedTemplateField)"
+              />
             </label>
 
             <div class="field-preview">
@@ -1777,6 +1803,7 @@ function formatTime(timestamp: number): string {
             </div>
 
             <button
+              v-if="!isProtectedField(selectedTemplateField)"
               class="remove-field-button"
               type="button"
               @click="removeField(selectedTemplateField.id)"

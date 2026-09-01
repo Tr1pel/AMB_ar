@@ -4,6 +4,7 @@ import {
   offlineDatabase,
 } from '@/shared/offline/offline-database'
 import { createEntityId, createSyncMetadata } from '@/shared/sync/sync-metadata'
+import { REQUIRED_REPORT_TEMPLATE_FIELDS } from '@/shared/constants/document-template'
 import {
   createDefaultRenderSpec,
   createInputSchema,
@@ -12,6 +13,7 @@ import {
 } from '@/shared/templates/document-template-schema'
 import { cloneDocumentTemplateField } from '@/shared/templates/document-template-field-clone'
 import {
+  createFieldTranslations,
   synchronizeLegacyFieldText,
   synchronizeLegacySectionText,
   synchronizeLegacyTemplateText,
@@ -99,7 +101,7 @@ export class DocumentTemplateRepository {
         title: 'Новый раздел',
         description: '',
         sortOrder: 1,
-        fields: [],
+        fields: createRequiredReportTemplateFields(),
       },
     ]
     const template: DocumentTemplate = {
@@ -291,6 +293,30 @@ function normalizeSections(sections: DocumentTemplateSection[]): DocumentTemplat
           })),
         }
       }),
+    }
+  })
+}
+
+function createRequiredReportTemplateFields(): DocumentTemplateSection['fields'] {
+  return REQUIRED_REPORT_TEMPLATE_FIELDS.map((definition, index) => {
+    const translations = createFieldTranslations(definition.label)
+
+    for (const locale of ['ru', 'en', 'fa'] as const) {
+      translations[locale].label = definition.translations[locale]
+    }
+
+    return {
+      id: createEntityId('template-field'),
+      dataPath: definition.dataPath,
+      label: definition.label,
+      type: definition.type,
+      required: true,
+      placeholder: '',
+      helpText: '',
+      translations,
+      width: 'half',
+      sortOrder: index + 1,
+      options: [],
     }
   })
 }

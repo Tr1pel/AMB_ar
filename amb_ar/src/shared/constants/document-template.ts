@@ -11,6 +11,33 @@ export interface DocumentTemplateFieldCatalogItem {
   group: string
 }
 
+export const REQUIRED_REPORT_TEMPLATE_FIELDS = [
+  {
+    dataPath: 'mainInfo.orderNumber',
+    label: 'Номер заказа',
+    type: 'text' as const,
+    translations: {
+      ru: 'Номер заказа',
+      en: 'Order number',
+      fa: 'شماره سفارش',
+    },
+  },
+  {
+    dataPath: 'mainInfo.surveyDate',
+    label: 'Дата инспекции',
+    type: 'date' as const,
+    translations: {
+      ru: 'Дата инспекции',
+      en: 'Date Inspection',
+      fa: 'بازرسی تاریخ',
+    },
+  },
+] as const
+
+export function isRequiredReportTemplateField(dataPath: string): boolean {
+  return REQUIRED_REPORT_TEMPLATE_FIELDS.some((field) => field.dataPath === dataPath)
+}
+
 export const DOCUMENT_TEMPLATE_FIELD_CATALOG: DocumentTemplateFieldCatalogItem[] = [
   { dataPath: 'mainInfo.orderNumber', label: 'Номер заказа', type: 'text', group: 'Партия' },
   { dataPath: 'mainInfo.zost', label: 'ZOST', type: 'text', group: 'Партия' },

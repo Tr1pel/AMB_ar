@@ -18,8 +18,6 @@ const DB_PATH = process.env.AMB_AR_DATABASE_PATH
   : join(SERVER_DIR, 'amb-ar.sqlite')
 const PORT = Number(process.env.AMB_AR_API_PORT ?? 3001)
 const HOST = process.env.AMB_AR_HOST?.trim() || '127.0.0.1'
-const WAREHOUSE_CODE = normalizeWarehouseCode(process.env.AMB_AR_WAREHOUSE_CODE ?? 'MSC01')
-const REPORT_NUMBER_TIME_ZONE = process.env.AMB_AR_REPORT_TIME_ZONE?.trim() || 'Europe/Moscow'
 const SESSION_COOKIE_NAME = 'amb_ar_session'
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const INITIAL_ACCOUNT_PASSWORD = process.env.AMB_AR_INITIAL_PASSWORD?.trim() || 'AmbAr-2026!'
@@ -30,6 +28,20 @@ const MAX_DOCUMENT_SIZE_BYTES = 50 * 1024 * 1024
 const MAX_PHOTOS_PER_REPORT = 100
 const ARCHIVE_PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000
 const WORKER_REPORT_STATUSES = new Set(['draft', 'ready'])
+const REQUIRED_REPORT_TEMPLATE_FIELDS = [
+  {
+    dataPath: 'mainInfo.orderNumber',
+    label: 'Номер заказа',
+    type: 'text',
+    translations: { ru: 'Номер заказа', en: 'Order number', fa: 'شماره سفارش' },
+  },
+  {
+    dataPath: 'mainInfo.surveyDate',
+    label: 'Дата инспекции',
+    type: 'date',
+    translations: { ru: 'Дата инспекции', en: 'Date Inspection', fa: 'بازرسی تاریخ' },
+  },
+]
 const PHOTO_CATEGORIES = new Set([
   'vehicle',
   'temperature',
@@ -42,10 +54,7 @@ const PHOTO_CATEGORIES = new Set([
   'notStandard',
 ])
 
-const serverDatabase = createServerDatabase(DB_PATH, {
-  warehouseCode: WAREHOUSE_CODE,
-  reportNumberTimeZone: REPORT_NUMBER_TIME_ZONE,
-})
+const serverDatabase = createServerDatabase(DB_PATH)
 const {
   readDb,
   writeDb,
@@ -444,14 +453,19 @@ async function handleApiRequest(request, response, requestUrl, db) {
       throw createHttpError(400, 'Некорректный статус макета')
     }
 
-    const inputSchema = validateInputSchema(
-      input.inputSchema ??
-        existing?.inputSchema ?? {
-          version: 1,
-          steps: input.sections ?? existing?.sections,
-        },
+    const inputSchema = enforceRequiredReportTemplateFields(
+      validateInputSchema(
+        input.inputSchema ??
+          existing?.inputSchema ?? {
+            version: 1,
+            steps: input.sections ?? existing?.sections,
+          },
+      ),
     )
-    const renderSpec = validateRenderSpec(input.renderSpec ?? existing?.renderSpec, inputSchema)
+    const renderSpec = synchronizeRequiredReportTemplateRenderFields(
+      validateRenderSpec(input.renderSpec ?? existing?.renderSpec, inputSchema),
+      inputSchema,
+    )
     const sections = inputSchema.steps
     const translations = input.translations ?? existing?.translations
     validateTemplateTranslations(translations)
@@ -948,7 +962,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const incomingUpdatedAt = Number(incomingDraft.updatedAt)
     const draft = stampEntity({
       id: reportId,
-      reportNumber: existingDraft?.reportNumber ?? createReportNumber(createdAt),
+      reportNumber: createReportNumber(mainInfo, existingDraft),
       status,
       ...(template
         ? { templateId: template.id, templateSnapshot: snapshotTemplate(template) }
@@ -1407,6 +1421,104 @@ function validateInputSchema(value) {
     version: 1,
     steps: validateTemplateSections(value.steps),
   }
+}
+
+function enforceRequiredReportTemplateFields(inputSchema) {
+  const sections = structuredClone(inputSchema.steps)
+  const firstSection = sections[0]
+
+  for (const definition of REQUIRED_REPORT_TEMPLATE_FIELDS) {
+    const existingField = sections
+      .flatMap((section) => section.fields)
+      .find((field) => field.dataPath === definition.dataPath)
+
+    if (existingField) {
+      existingField.label = definition.label
+      existingField.type = definition.type
+      existingField.required = true
+      existingField.translations = normalizeRequiredReportFieldTranslations(
+        existingField.translations,
+        definition.translations,
+      )
+      continue
+    }
+
+    firstSection.fields.push({
+      id: createEntityId('template-field'),
+      dataPath: definition.dataPath,
+      label: definition.label,
+      type: definition.type,
+      required: true,
+      placeholder: '',
+      helpText: '',
+      translations: normalizeRequiredReportFieldTranslations(undefined, definition.translations),
+      width: 'half',
+      sortOrder: firstSection.fields.length + 1,
+      options: [],
+    })
+  }
+
+  return { version: 1, steps: sections }
+}
+
+function normalizeRequiredReportFieldTranslations(translations, labels) {
+  return {
+    ru: {
+      placeholder: '',
+      helpText: '',
+      ...translations?.ru,
+      label: labels.ru,
+    },
+    en: {
+      placeholder: '',
+      helpText: '',
+      ...translations?.en,
+      label: labels.en,
+    },
+    fa: {
+      placeholder: '',
+      helpText: '',
+      ...translations?.fa,
+      label: labels.fa,
+    },
+  }
+}
+
+function synchronizeRequiredReportTemplateRenderFields(renderSpec, inputSchema) {
+  const synchronized = structuredClone(renderSpec)
+
+  for (const definition of REQUIRED_REPORT_TEMPLATE_FIELDS) {
+    const inputSection = inputSchema.steps.find((section) =>
+      section.fields.some((field) => field.dataPath === definition.dataPath),
+    )
+    const inputField = inputSection?.fields.find((field) => field.dataPath === definition.dataPath)
+
+    if (!inputSection || !inputField) {
+      continue
+    }
+
+    let renderSection = synchronized.sections.find(
+      (section) => section.inputSectionId === inputSection.id,
+    )
+
+    if (!renderSection) {
+      renderSection = createDefaultRenderSpec([inputSection]).sections[0]
+      synchronized.sections.push(renderSection)
+    }
+
+    if (!renderSection.fields.some((field) => field.dataPath === definition.dataPath)) {
+      renderSection.fields.push({
+        dataPath: inputField.dataPath,
+        label: inputField.label,
+        width: inputField.width ?? 'half',
+        display: 'value',
+        hideWhenEmpty: false,
+        hidden: false,
+      })
+    }
+  }
+
+  return synchronized
 }
 
 function validateRenderSpec(value, inputSchema) {
@@ -2054,34 +2166,38 @@ function createEntityId(prefix) {
   return `${prefix}_${randomUUID()}`
 }
 
-function createReportNumber(createdAt) {
-  const date = formatReportNumberDate(createdAt)
-  const prefix = `AMB-QC-${WAREHOUSE_CODE}-${date}-`
-  const sequence = allocateReportSequence(WAREHOUSE_CODE, date)
+function createReportNumber(mainInfo, existingDraft) {
+  const orderNumber = String(mainInfo?.orderNumber ?? '').trim()
+  const inspectionDate = String(mainInfo?.surveyDate ?? '').trim()
 
-  return `${prefix}${String(sequence).padStart(4, '0')}`
-}
-
-function formatReportNumberDate(timestamp) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: REPORT_NUMBER_TIME_ZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(timestamp))
-  const valueByType = new Map(parts.map((part) => [part.type, part.value]))
-
-  return `${valueByType.get('year')}${valueByType.get('month')}${valueByType.get('day')}`
-}
-
-function normalizeWarehouseCode(value) {
-  const code = String(value).trim().toUpperCase()
-
-  if (!/^[A-Z0-9]{2,12}$/.test(code)) {
-    throw new Error('AMB_AR_WAREHOUSE_CODE должен содержать 2–12 латинских букв или цифр')
+  if (!orderNumber || !inspectionDate) {
+    return undefined
   }
 
-  return code
+  const inspectionDateValue = new Date(`${inspectionDate}T00:00:00.000Z`)
+
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(inspectionDate) ||
+    Number.isNaN(inspectionDateValue.getTime()) ||
+    inspectionDateValue.toISOString().slice(0, 10) !== inspectionDate
+  ) {
+    throw createHttpError(400, 'Дата инспекции должна быть указана в формате ГГГГ-ММ-ДД')
+  }
+
+  const compactDate = inspectionDate.replaceAll('-', '')
+  const prefix = `${orderNumber}-${compactDate}-`
+  const existingNumber = String(existingDraft?.reportNumber ?? '')
+
+  if (new RegExp(`^${escapeRegularExpression(prefix)}\\d+$`).test(existingNumber)) {
+    return existingNumber
+  }
+
+  const sequence = allocateReportSequence(orderNumber, compactDate)
+  return `${prefix}${sequence}`
+}
+
+function escapeRegularExpression(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function createSeedAccounts() {

@@ -209,8 +209,6 @@ export function createServerDatabase(databasePath, options = {}) {
   migrateDocumentTemplateSchemas(database)
   migrateReportArchiveStatus(database)
   migrateReportNumber(database)
-  backfillReportNumbers(database, options.warehouseCode, options.reportNumberTimeZone)
-
   const statements = prepareStatements(database)
 
   migrateLegacyEntities(database, statements)
@@ -226,8 +224,8 @@ export function createServerDatabase(databasePath, options = {}) {
       purgeExpiredArchivedReports(database, nowTimestamp),
     permanentlyDeleteArchivedReport: (reportId) =>
       permanentlyDeleteArchivedReport(database, reportId),
-    allocateReportSequence: (warehouseCode, reportDate) =>
-      allocateReportSequence(database, warehouseCode, reportDate),
+    allocateReportSequence: (orderNumber, inspectionDate) =>
+      allocateReportSequence(database, orderNumber, inspectionDate),
     createAuthSession: (tokenHash, accountId, createdAt, expiresAt) => {
       database
         .prepare(
@@ -269,8 +267,7 @@ function migrateAccountPassword(database) {
   }
 }
 
-function allocateReportSequence(database, warehouseCode, reportDate) {
-  const prefix = `AMB-QC-${warehouseCode}-${reportDate}-`
+function allocateReportSequence(database, orderNumber, inspectionDate, prefix = `${orderNumber}-${inspectionDate}-`) {
 
   database.exec('BEGIN IMMEDIATE')
 
@@ -280,14 +277,14 @@ function allocateReportSequence(database, warehouseCode, reportDate) {
         `SELECT last_sequence FROM report_number_counters
          WHERE warehouse_code = ? AND report_date = ?`,
       )
-      .get(warehouseCode, reportDate)?.last_sequence
+      .get(orderNumber, inspectionDate)?.last_sequence
     const highestStoredReport = database
       .prepare(
         `SELECT MAX(CAST(SUBSTR(report_number, ?) AS INTEGER)) AS last_sequence
          FROM report_drafts
-         WHERE report_number LIKE ?`,
+         WHERE report_number LIKE ? ESCAPE '\\'`,
       )
-      .get(prefix.length + 1, `${prefix}%`)?.last_sequence
+      .get(prefix.length + 1, `${escapeLikePattern(prefix)}%`)?.last_sequence
     const nextSequence = Math.max(Number(storedCounter ?? 0), Number(highestStoredReport ?? 0)) + 1
 
     database
@@ -297,7 +294,7 @@ function allocateReportSequence(database, warehouseCode, reportDate) {
          ON CONFLICT (warehouse_code, report_date) DO UPDATE SET
            last_sequence = excluded.last_sequence`,
       )
-      .run(warehouseCode, reportDate, nextSequence)
+      .run(orderNumber, inspectionDate, nextSequence)
     database.exec('COMMIT')
     return nextSequence
   } catch (error) {
@@ -306,41 +303,8 @@ function allocateReportSequence(database, warehouseCode, reportDate) {
   }
 }
 
-function backfillReportNumbers(database, warehouseCode, timeZone) {
-  if (!warehouseCode || !timeZone) {
-    return
-  }
-
-  const reports = database
-    .prepare(
-      `SELECT id, created_at FROM report_drafts
-       WHERE report_number IS NULL
-       ORDER BY created_at, id`,
-    )
-    .all()
-  const updateReportNumber = database.prepare(
-    'UPDATE report_drafts SET report_number = ? WHERE id = ? AND report_number IS NULL',
-  )
-
-  for (const report of reports) {
-    const reportDate = formatDateInTimeZone(report.created_at, timeZone)
-    const sequence = allocateReportSequence(database, warehouseCode, reportDate)
-    const reportNumber = `AMB-QC-${warehouseCode}-${reportDate}-${String(sequence).padStart(4, '0')}`
-
-    updateReportNumber.run(reportNumber, report.id)
-  }
-}
-
-function formatDateInTimeZone(timestamp, timeZone) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(timestamp))
-  const valueByType = new Map(parts.map((part) => [part.type, part.value]))
-
-  return `${valueByType.get('year')}${valueByType.get('month')}${valueByType.get('day')}`
+function escapeLikePattern(value) {
+  return value.replace(/[\\%_]/g, '\\$&')
 }
 
 function migrateDocumentTemplateSchemas(database) {

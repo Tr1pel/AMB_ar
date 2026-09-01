@@ -61,9 +61,7 @@ function getReportOrder(report: ReportDraft): string {
 }
 
 function getReportNumber(report: ReportDraft): string {
-  return report.reportNumber?.startsWith('AMB-QC-')
-    ? report.reportNumber
-    : 'Ожидает синхронизации'
+  return report.reportNumber?.trim() || 'Ожидает синхронизации'
 }
 
 function getReportPhotoCount(report: ReportDraft): number {
@@ -226,7 +224,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
               <dd>{{ formatReportTime(report.updatedAt) }}</dd>
             </div>
             <div>
-              <dt>Работник</dt>
+              <dt>Сюрвейер</dt>
               <dd>{{ report.inspectorName || 'Не указан' }}</dd>
             </div>
             <div>

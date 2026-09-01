@@ -136,8 +136,20 @@ test('worker submits a report and admin processes server-persisted binaries', as
   )
   assert.equal(createdEditorDraft.status, 201)
   assert.equal(createdEditorDraft.body.status, 'draft')
+  assert.deepEqual(
+    createdEditorDraft.body.inputSchema.steps[0].fields.map((field) => field.dataPath),
+    ['mainInfo.orderNumber', 'mainInfo.surveyDate'],
+  )
+  assert.equal(
+    createdEditorDraft.body.inputSchema.steps[0].fields[0].translations.en.label,
+    'Order number',
+  )
+  assert.equal(
+    createdEditorDraft.body.inputSchema.steps[0].fields[1].translations.fa.label,
+    'بازرسی تاریخ',
+  )
 
-  const rejectedEmptyPublication = await request(
+  const publishedSystemFieldsTemplate = await request(
     port,
     '/api/document-templates/document-template-editor-flow',
     {
@@ -146,8 +158,8 @@ test('worker submits a report and admin processes server-persisted binaries', as
       body: { ...createdEditorDraft.body, status: 'active' },
     },
   )
-  assert.equal(rejectedEmptyPublication.status, 400)
-  assert.match(rejectedEmptyPublication.body.message, /хотя бы одно поле/)
+  assert.equal(publishedSystemFieldsTemplate.status, 200)
+  assert.equal(publishedSystemFieldsTemplate.body.status, 'active')
 
   const savedEditorDraft = await request(
     port,
@@ -188,6 +200,59 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(savedEditorDraft.status, 200)
   assert.equal(savedEditorDraft.body.status, 'draft')
   assert.equal(savedEditorDraft.body.sections[0].fields[0].label, 'Поле')
+  assert.equal(
+    savedEditorDraft.body.sections[0].fields.some(
+      (field) => field.dataPath === 'mainInfo.orderNumber' && field.required,
+    ),
+    true,
+  )
+
+  const protectedFieldUpdate = await request(
+    port,
+    '/api/document-templates/document-template-editor-flow',
+    {
+      method: 'PUT',
+      accountId: admin.body.id,
+      body: {
+        ...savedEditorDraft.body,
+        inputSchema: {
+          ...savedEditorDraft.body.inputSchema,
+          steps: savedEditorDraft.body.inputSchema.steps.map((section) => ({
+            ...section,
+            fields: section.fields
+              .filter((field) => field.dataPath !== 'mainInfo.surveyDate')
+              .map((field) =>
+                field.dataPath === 'mainInfo.orderNumber'
+                  ? {
+                      ...field,
+                      label: 'Подмененное имя',
+                      required: false,
+                      translations: {
+                        ...field.translations,
+                        ru: { ...field.translations.ru, label: 'Подмененное имя' },
+                      },
+                    }
+                  : field,
+              ),
+          })),
+        },
+      },
+    },
+  )
+  assert.equal(protectedFieldUpdate.status, 200)
+  const protectedFields = protectedFieldUpdate.body.inputSchema.steps[0].fields
+  assert.equal(
+    protectedFields.find((field) => field.dataPath === 'mainInfo.orderNumber').label,
+    'Номер заказа',
+  )
+  assert.equal(
+    protectedFields.find((field) => field.dataPath === 'mainInfo.orderNumber').required,
+    true,
+  )
+  assert.equal(
+    protectedFields.find((field) => field.dataPath === 'mainInfo.surveyDate').label,
+    'Дата инспекции',
+  )
 
   const publishedEditorTemplate = await request(
     port,
@@ -282,8 +347,7 @@ test('worker submits a report and admin processes server-persisted binaries', as
     body: { draft, photos: [photo, secondaryPhoto] },
   })
   assert.equal(savedDraft.status, 200)
-  assert.match(savedDraft.body.draft.reportNumber, /^AMB-QC-MSC01-\d{8}-0001$/)
-  assert.equal(savedDraft.body.draft.reportNumber.includes('TEST'), false)
+  assert.equal(savedDraft.body.draft.reportNumber, 'TEST-ORDER-20260817-1')
   assert.equal(savedDraft.body.draft.status, 'draft')
   assert.equal(savedDraft.body.draft.workerAccountId, worker.body.id)
   assert.equal(
@@ -345,10 +409,7 @@ test('worker submits a report and admin processes server-persisted binaries', as
     },
   })
   assert.equal(otherWorkerDraft.status, 200)
-  assert.equal(
-    otherWorkerDraft.body.draft.reportNumber,
-    savedDraft.body.draft.reportNumber.replace(/0001$/, '0002'),
-  )
+  assert.equal(otherWorkerDraft.body.draft.reportNumber, 'TEST-ORDER-20260817-2')
 
   const foreignPhotoCollision = await request(port, `/api/reports/${reportId}`, {
     method: 'PUT',
@@ -402,6 +463,7 @@ test('worker submits a report and admin processes server-persisted binaries', as
   })
   assert.equal(completedDraft.status, 200)
   assert.equal(completedDraft.body.draft.status, 'draft')
+  assert.equal(completedDraft.body.draft.reportNumber, 'ORDER-42-20260817-1')
 
   const submissionWithoutPreview = await request(port, `/api/reports/${reportId}/submit`, {
     method: 'POST',
@@ -838,7 +900,7 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(savedPhotoOnlyReport.status, 200)
   assert.equal(
     savedPhotoOnlyReport.body.draft.reportNumber,
-    savedDraft.body.draft.reportNumber.replace(/0001$/, '0004'),
+    'TEST-ORDER-20260817-3',
   )
   assert.equal(savedPhotoOnlyReport.body.draft.productId, '')
   assert.equal(savedPhotoOnlyReport.body.draft.productName, photoOnlyTemplate.name)
@@ -1086,7 +1148,8 @@ function createDraft(id, workerAccountId) {
     productName: 'Перец красный',
     inspectorName: 'Инспектор',
     mainInfo: {
-      orderNumber: '',
+      orderNumber: 'TEST-ORDER',
+      surveyDate: '2026-08-17',
       placeOfSurvey: '',
       productName: 'Перец красный',
     },

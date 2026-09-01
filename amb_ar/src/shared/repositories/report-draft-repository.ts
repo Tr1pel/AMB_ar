@@ -207,7 +207,7 @@ export async function createReportDraft(
   )
   const draft: ReportDraft = {
     id: draftId,
-    reportNumber: existingDraft?.reportNumber ?? createLocalReportNumber(draftId),
+    reportNumber: existingDraft?.reportNumber,
     status: options.status ?? 'draft',
     templateId: selectedTemplate?.id ?? existingDraft?.templateId,
     templateSnapshot: selectedTemplate
@@ -246,10 +246,6 @@ export async function createReportDraft(
   triggerSynchronization()
 
   return { draft, photos, documents: [] }
-}
-
-function createLocalReportNumber(draftId: string): string {
-  return `LOCAL-${draftId.replace(/^report_/, '')}`
 }
 
 export async function listReportDrafts(adminAccountId?: string): Promise<ReportDraft[]> {

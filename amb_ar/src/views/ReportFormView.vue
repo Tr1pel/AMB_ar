@@ -453,9 +453,10 @@ onMounted(async () => {
     }
 
     hydrateExistingReport()
-
-    isAutosaveReady.value = true
     await nextTick()
+    // Let all watchers triggered by hydration settle while autosave is disabled.
+    // Otherwise opening a report schedules a save and changes its modification time.
+    isAutosaveReady.value = true
     isFormReady.value = true
   } catch (error) {
     formLoadError.value =
@@ -1888,7 +1889,7 @@ function hydrateExistingReport(): void {
       >
         <div class="field-stack two-columns">
           <label class="field-label" for="inspectorName">
-            Работник
+            Сюрвейер
             <input
               id="inspectorName"
               :value="workerFullName"
