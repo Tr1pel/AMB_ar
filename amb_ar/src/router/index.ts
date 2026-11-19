@@ -50,6 +50,12 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['admin'], title: 'Сотрудники' },
     },
     {
+      path: '/manager/reports',
+      name: 'manager-reports',
+      component: HomeView,
+      meta: { requiresAuth: true, roles: ['manager'], title: 'Отчеты специалистов' },
+    },
+    {
       path: '/reports/new',
       name: 'new-report',
       component: ReportTemplateSelectionView,
@@ -73,7 +79,7 @@ const router = createRouter({
       name: 'report-details',
       component: () => import('@/views/ReportDetailView.vue'),
       props: true,
-      meta: { requiresAuth: true, roles: ['admin', 'worker'], title: 'Карточка отчета' },
+      meta: { requiresAuth: true, roles: ['admin', 'manager', 'worker'], title: 'Карточка отчета' },
     },
   ],
 })
@@ -88,11 +94,11 @@ router.beforeEach(async (to) => {
       return { name: 'login' }
     }
 
-    return authStore.isAdmin ? { name: 'admin-reports' } : { name: 'worker-reports' }
+    return { name: authStore.homeRoute }
   }
 
   if (to.name === 'login' && authStore.currentAccount) {
-    return authStore.isAdmin ? { name: 'admin-reports' } : { name: 'worker-reports' }
+    return { name: authStore.homeRoute }
   }
 
   if (to.meta.requiresAuth && !authStore.currentAccount) {
@@ -106,7 +112,7 @@ router.beforeEach(async (to) => {
     authStore.currentAccount &&
     !allowedRoles.includes(authStore.currentAccount.role)
   ) {
-    return authStore.isAdmin ? { name: 'admin-reports' } : { name: 'worker-reports' }
+    return { name: authStore.homeRoute }
   }
 
   return true

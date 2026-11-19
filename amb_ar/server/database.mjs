@@ -23,7 +23,7 @@ export function createServerDatabase(databasePath, options = {}) {
       login_number TEXT NOT NULL,
       password_hash TEXT,
       full_name TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('admin', 'worker')),
+      role TEXT NOT NULL CHECK (role IN ('admin', 'manager', 'worker')),
       is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)),
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -204,6 +204,7 @@ export function createServerDatabase(databasePath, options = {}) {
   `)
 
   migrateAccountPassword(database)
+  migrateAccountRoles(database)
   migrateProductPhotoTemplateField(database)
   migrateProductPhotoRepeatingBlock(database)
   migrateDocumentTemplateSchemas(database)
@@ -212,7 +213,7 @@ export function createServerDatabase(databasePath, options = {}) {
   const statements = prepareStatements(database)
 
   migrateLegacyEntities(database, statements)
-  database.exec('PRAGMA user_version = 7')
+  database.exec('PRAGMA user_version = 8')
 
   return {
     path: databasePath,
@@ -264,6 +265,63 @@ function migrateAccountPassword(database) {
 
   if (!columns.some((column) => column.name === 'password_hash')) {
     database.exec('ALTER TABLE accounts ADD COLUMN password_hash TEXT')
+  }
+}
+
+function migrateAccountRoles(database) {
+  const { sql } = database.prepare("SELECT sql FROM sqlite_schema WHERE name = 'accounts'").get()
+
+  if (sql.includes("'manager'")) return
+
+  // Rebuild the CHECK constraint while retaining referencing reports and sessions.
+  // Foreign keys must be disabled before beginning the table-rebuild transaction.
+  database.exec('PRAGMA foreign_keys = OFF')
+
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(`
+      CREATE TABLE accounts_with_manager (
+        id TEXT PRIMARY KEY,
+        login_number TEXT NOT NULL,
+        password_hash TEXT,
+        full_name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin', 'manager', 'worker')),
+        is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        last_modified INTEGER NOT NULL,
+        local_version TEXT NOT NULL,
+        server_timestamp INTEGER,
+        server_version TEXT
+      ) STRICT;
+
+      INSERT INTO accounts_with_manager (
+        id, login_number, password_hash, full_name, role, is_active, created_at, updated_at,
+        deleted_at, last_modified, local_version, server_timestamp, server_version
+      ) SELECT
+        id, login_number, password_hash, full_name, role, is_active, created_at, updated_at,
+        deleted_at, last_modified, local_version, server_timestamp, server_version
+      FROM accounts;
+
+      DROP TABLE accounts;
+      ALTER TABLE accounts_with_manager RENAME TO accounts;
+      CREATE UNIQUE INDEX accounts_active_login_idx ON accounts (login_number)
+        WHERE deleted_at IS NULL;
+      CREATE INDEX accounts_role_active_idx ON accounts (role, is_active)
+        WHERE deleted_at IS NULL;
+    `)
+
+    if (database.prepare('PRAGMA foreign_key_check').all().length) {
+      throw new Error('Не удалось сохранить связи аккаунтов при обновлении ролей')
+    }
+
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
   }
 }
 

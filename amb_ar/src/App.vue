@@ -4,6 +4,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 
 import ConfirmationDialog from '@/components/ui/ConfirmationDialog.vue'
 import LocaleSwitcher from '@/components/ui/LocaleSwitcher.vue'
+import { ACCOUNT_ROLE_LABELS } from '@/shared/constants/accounts'
 import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
 import { useAuthStore } from '@/stores/auth.store'
 import { useSyncStore } from '@/stores/sync.store'
@@ -27,23 +28,28 @@ const pageTitle = computed(() => String(route.meta.title ?? 'Рабочая об
 const isReportWorkScreen = computed(
   () => route.name === 'edit-report' || route.name === 'report-details',
 )
-const isAdminReportsPage = computed(
-  () => route.name === 'admin-reports' || route.name === 'admin-report-archive',
+const isReportsPage = computed(
+  () =>
+    route.name === 'admin-reports' ||
+    route.name === 'admin-report-archive' ||
+    route.name === 'manager-reports',
 )
 const hasAdminGreenHeader = computed(
   () =>
-    isAdminReportsPage.value ||
+    isReportsPage.value ||
     route.name === 'admin-template' ||
     route.name === 'admin-accounts',
 )
 const topbarTitle = computed(() =>
-  isAdminReportsPage.value
+  isReportsPage.value
     ? route.name === 'admin-report-archive'
       ? 'Архив отчетов'
-      : 'Отчеты работников'
+      : 'Отчеты специалистов'
     : pageTitle.value,
 )
-const roleLabel = computed(() => (authStore.isAdmin ? 'Администратор' : 'Инспектор ОКК'))
+const roleLabel = computed(() =>
+  authStore.currentRole ? ACCOUNT_ROLE_LABELS[authStore.currentRole] : '',
+)
 const initials = computed(() =>
   (authStore.currentAccount?.fullName ?? 'АМ')
     .split(' ')
@@ -90,6 +96,19 @@ const navItems = computed<NavigationItem[]>(() => {
     ]
   }
 
+  if (authStore.isManager) {
+    return [
+      {
+        id: 'reports',
+        to: '/manager/reports',
+        label: 'Журнал отчетов',
+        shortLabel: 'Отчеты',
+        icon: '/icons/admin-reports.svg',
+        iconType: 'svg',
+      },
+    ]
+  }
+
   return [
     {
       id: 'reports',
@@ -115,6 +134,10 @@ onMounted(() => {
 })
 
 function isNavItemActive(path: string): boolean {
+  if (path === '/manager/reports') {
+    return route.name === 'manager-reports' || route.name === 'report-details'
+  }
+
   if (path === '/reports/history') {
     return route.path === path || route.name === 'report-details' || route.name === 'edit-report'
   }

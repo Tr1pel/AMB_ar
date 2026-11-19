@@ -58,13 +58,15 @@ const filteredReports = computed(() => {
 })
 
 const readyReportCount = computed(
-  () => reportDraftStore.reports.filter((report) => report.status === 'ready').length,
+  () => reportDraftStore.reports.filter(
+    (report) => report.status === 'ready' || report.status === 'exported',
+  ).length,
 )
 
 onMounted(async () => {
-  await refreshAdminReports()
+  await refreshReports()
   isInitialLoading.value = false
-  refreshTimer = setInterval(() => void refreshAdminReports(), 20_000)
+  refreshTimer = setInterval(() => void refreshReports(), 20_000)
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
@@ -72,7 +74,7 @@ watch(
   () => props.archiveMode,
   async () => {
     isInitialLoading.value = true
-    await refreshAdminReports()
+    await refreshReports()
     isInitialLoading.value = false
   },
 )
@@ -88,7 +90,7 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
-async function refreshAdminReports(): Promise<void> {
+async function refreshReports(): Promise<void> {
   nowTimestamp.value = Date.now()
 
   if (!reportDraftStore.isLoading) {
@@ -162,7 +164,7 @@ function replaceReportPhotoPreviewUrls(reportId: string, urls: string[]): void {
 
 function handleVisibilityChange(): void {
   if (document.visibilityState === 'visible') {
-    void refreshAdminReports()
+    void refreshReports()
   }
 }
 
@@ -271,16 +273,18 @@ async function downloadReportPdf(report: ReportDraft): Promise<void> {
     const accountId = authStore.currentAccount?.id
 
     if (!accountId) {
-      throw new Error('Нужно войти под администратором')
+      throw new Error('Нужно войти в систему')
     }
 
-    const details = await getReportDraftDetails(report.id, accountId)
+    const details = await getReportDraftDetails(report.id, accountId, {
+      serverOnly: authStore.isManager,
+    })
 
     if (!details) {
       throw new Error('Отчет не найден на сервере')
     }
 
-    if (report.status === 'archived') {
+    if (report.status === 'archived' || authStore.isManager) {
       const latestDocument = details.documents.at(-1)
 
       if (latestDocument) {
@@ -288,7 +292,7 @@ async function downloadReportPdf(report: ReportDraft): Promise<void> {
         return
       }
 
-      throw new Error('Для архивного отчёта PDF не найден')
+      throw new Error('Готовый PDF отчета не найден на сервере')
     }
 
     const document = await reportDraftStore.generateDocument(details.draft.id)
@@ -376,7 +380,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
   <main class="screen-page home-page">
     <section class="home-hero">
       <h1 class="home-hero__title">
-        {{ props.archiveMode ? 'Архив отчетов' : 'Отчеты работников' }}
+        {{ props.archiveMode ? 'Архив отчетов' : 'Отчеты специалистов' }}
       </h1>
     </section>
 
@@ -411,7 +415,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
         class="secondary-button"
         type="button"
         :disabled="reportDraftStore.isLoading"
-        @click="refreshAdminReports"
+        @click="refreshReports"
       >
         {{ reportDraftStore.isLoading ? 'Обновляем...' : 'Обновить с сервера' }}
       </button>
@@ -442,7 +446,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
             </div>
 
             <p class="report-card__meta">
-              {{ report.inspectorName || 'Работник не указан' }} ·
+              {{ report.inspectorName || 'Специалист не указан' }} ·
               {{ formatReportTime(report.createdAt) }}
             </p>
 
@@ -494,7 +498,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
               {{ activeActionReportId === report.id ? 'Создаем...' : 'PDF' }}
             </button>
             <button
-              v-if="props.archiveMode"
+              v-if="authStore.isAdmin && props.archiveMode"
               class="secondary-button"
               type="button"
               :disabled="activeRestoreReportId === report.id || reportDraftStore.isSaving"
@@ -503,7 +507,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
               {{ activeRestoreReportId === report.id ? 'Возвращаем...' : 'Вернуть из архива' }}
             </button>
             <button
-              v-if="!props.archiveMode"
+              v-if="authStore.isAdmin && !props.archiveMode"
               class="danger-button"
               type="button"
               :disabled="activeArchiveReportId === report.id || reportDraftStore.isSaving"
@@ -512,7 +516,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
               {{ activeArchiveReportId === report.id ? 'Переносим...' : 'Удалить' }}
             </button>
             <button
-              v-else
+              v-else-if="authStore.isAdmin && props.archiveMode"
               class="danger-button"
               type="button"
               :disabled="activePermanentDeleteReportId === report.id || reportDraftStore.isSaving"
@@ -528,7 +532,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
         {{
           props.archiveMode
             ? 'В архиве пока нет отчетов.'
-            : 'Отчетов пока нет. Когда работники сохранят документы, они появятся здесь.'
+            : 'Отчетов пока нет. Когда специалисты отправят отчеты, они появятся здесь.'
         }}
       </p>
     </section>

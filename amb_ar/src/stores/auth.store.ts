@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
+import { ACCOUNT_HOME_ROUTES } from '@/shared/constants/accounts'
 import {
   cacheAccount,
   clearOtherAccountsPersonalData,
@@ -24,7 +25,11 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => currentAccount.value !== null)
   const currentRole = computed<AccountRole | null>(() => currentAccount.value?.role ?? null)
   const isAdmin = computed(() => currentRole.value === 'admin')
+  const isManager = computed(() => currentRole.value === 'manager')
   const isWorker = computed(() => currentRole.value === 'worker')
+  const homeRoute = computed(() =>
+    currentRole.value ? ACCOUNT_HOME_ROUTES[currentRole.value] : 'login',
+  )
 
   async function initialize(): Promise<void> {
     if (isInitialized.value) {
@@ -114,7 +119,9 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     currentRole,
     isAdmin,
+    isManager,
     isWorker,
+    homeRoute,
     initialize,
     signIn,
     signInAsRole,

@@ -179,7 +179,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
           v-model="searchQuery"
           class="field-control"
           type="search"
-          placeholder="Товар, заказ, работник или место"
+          placeholder="Товар, заказ, специалист или место"
         />
       </label>
     </section>

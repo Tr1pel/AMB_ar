@@ -48,7 +48,7 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
 
     if (authStore.isWorker) {
       void synchronizeWorkerReports()
-    } else if (authStore.isAdmin) {
+    } else if (authStore.isAdmin || authStore.isManager) {
       void refreshReports()
     }
   })
@@ -79,7 +79,9 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     const authStore = useAuthStore()
 
     reports.value = await listReportDrafts(
-      authStore.isAdmin && authStore.currentAccount ? authStore.currentAccount.id : undefined,
+      (authStore.isAdmin || authStore.isManager) && authStore.currentAccount
+        ? authStore.currentAccount.id
+        : undefined,
     )
   }
 
@@ -155,6 +157,10 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
   async function loadHome(): Promise<void> {
     isLoading.value = true
     errorMessage.value = null
+
+    if (useAuthStore().isManager) {
+      reports.value = []
+    }
 
     try {
       await refreshReports()
@@ -248,8 +254,11 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     selectedDocuments.value = []
 
     try {
-      const accountId = useAuthStore().currentAccount?.id
-      const details = accountId ? await getReportDraftDetails(reportId, accountId) : null
+      const authStore = useAuthStore()
+      const accountId = authStore.currentAccount?.id
+      const details = accountId
+        ? await getReportDraftDetails(reportId, accountId, { serverOnly: authStore.isManager })
+        : null
 
       selectedReport.value = details?.draft ?? null
       selectedPhotos.value = details?.photos ?? []
@@ -263,6 +272,11 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
 
   async function deleteReport(reportId: string): Promise<boolean> {
     const authStore = useAuthStore()
+
+    if (authStore.isManager) {
+      errorMessage.value = 'Менеджеру доступен только просмотр и скачивание готовых отчетов'
+      return false
+    }
 
     if (!authStore.currentAccount?.id) {
       errorMessage.value = 'Нужно войти в систему'
@@ -393,13 +407,16 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
     errorMessage.value = null
 
     try {
-      const accountId = useAuthStore().currentAccount?.id
+      const authStore = useAuthStore()
+      const accountId = authStore.currentAccount?.id
 
       if (!accountId) {
         throw new Error('Нужно войти в систему')
       }
 
-      const details = await getReportDraftDetails(reportId, accountId)
+      const details = await getReportDraftDetails(reportId, accountId, {
+        serverOnly: authStore.isManager,
+      })
 
       if (!details) {
         throw new Error('Отчет не найден')
@@ -408,6 +425,11 @@ export const useReportDraftStore = defineStore('reportDraft', () => {
       const existingDocument = [...details.documents]
         .sort((first, second) => first.generatedAt - second.generatedAt)
         .at(-1)
+
+      if (authStore.isManager && !existingDocument) {
+        throw new Error('Готовый PDF отчета не найден на сервере')
+      }
+
       const document =
         existingDocument ?? (details.draft.status === 'draft'
           ? await generateLocalDocument(details.draft, details.photos, accountId)

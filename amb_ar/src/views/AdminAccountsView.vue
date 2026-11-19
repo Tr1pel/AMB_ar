@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 
+import { ACCOUNT_ROLE_LABELS } from '@/shared/constants/accounts'
 import { useAccountAdminStore } from '@/stores/account-admin.store'
 import { generateAccountLoginNumber } from '@/shared/repositories/account-repository'
 import { requestConfirmation } from '@/shared/ui/confirmation-dialog'
@@ -230,7 +231,7 @@ async function deleteAccount(accountId: string): Promise<void> {
         >
           <span class="account-row__identity">
             <strong>{{ account.fullName }}</strong>
-            <small>{{ account.role === 'admin' ? 'Администратор' : 'Работник' }}</small>
+            <small>{{ ACCOUNT_ROLE_LABELS[account.role] }}</small>
           </span>
           <span class="account-row__arrow" aria-hidden="true">›</span>
         </button>
@@ -257,8 +258,9 @@ async function deleteAccount(accountId: string): Promise<void> {
             Роль
             <select v-model="accountForm.role" class="field-control" required @change="handleRoleChange">
               <option disabled value="">Выберите роль</option>
-              <option value="worker">Работник</option>
               <option value="admin">Администратор</option>
+              <option value="manager">Менеджер</option>
+              <option value="worker">Специалист</option>
             </select>
           </label>
 

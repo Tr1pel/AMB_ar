@@ -113,6 +113,47 @@ test('worker submits a report and admin processes server-persisted binaries', as
   })
   assert.equal(createdAccountLogin.status, 200)
 
+  const managerNumber = await request(port, '/api/accounts/generate-login-number', {
+    method: 'POST',
+    accountId: admin.body.id,
+    body: { role: 'manager' },
+  })
+  assert.equal(managerNumber.status, 200)
+  assert.equal(managerNumber.body.loginNumber, '3002')
+
+  const createdManager = await request(port, '/api/accounts', {
+    method: 'POST',
+    accountId: admin.body.id,
+    body: {
+      loginNumber: managerNumber.body.loginNumber,
+      fullName: 'Менеджер отчетов',
+      role: 'manager',
+      password: testPassword,
+    },
+  })
+  assert.equal(createdManager.status, 201)
+  assert.equal(createdManager.body.role, 'manager')
+  const manager = await login(port, managerNumber.body.loginNumber)
+  assert.equal(manager.status, 200)
+  assert.equal(manager.body.role, 'manager')
+  const managerSession = await request(port, '/api/auth/session', { accountId: manager.body.id })
+  assert.equal(managerSession.body.role, 'manager')
+  const demoManager = await request(port, '/api/auth/demo', {
+    method: 'POST',
+    body: { role: 'manager' },
+  })
+  assert.equal(demoManager.status, 200)
+  assert.equal(demoManager.body.role, 'manager')
+
+  for (const endpoint of ['/api/auth/demo', '/api/accounts/generate-login-number', '/api/accounts']) {
+    const invalidRole = await request(port, endpoint, {
+      method: 'POST',
+      accountId: admin.body.id,
+      body: { loginNumber: '9999', fullName: 'Invalid role', password: testPassword, role: 'owner' },
+    })
+    assert.equal(invalidRole.status, 400, endpoint)
+  }
+
   const editorFlowTemplate = createTemplate()
   editorFlowTemplate.id = 'document-template-editor-flow'
   editorFlowTemplate.name = 'Макет из редактора'
@@ -386,6 +427,16 @@ test('worker submits a report and admin processes server-persisted binaries', as
   })
   assert.equal(hiddenAdminDetails.status, 404)
 
+  const hiddenManagerList = await request(port, '/api/reports', { accountId: manager.body.id })
+  assert.equal(hiddenManagerList.status, 200)
+  assert.deepEqual(hiddenManagerList.body, [])
+  for (const suffix of ['', '/photo-previews']) {
+    const hiddenManagerDraft = await request(port, `/api/reports/${reportId}${suffix}`, {
+      accountId: manager.body.id,
+    })
+    assert.equal(hiddenManagerDraft.status, 404)
+  }
+
   const forbiddenDetails = await request(port, `/api/reports/${reportId}`, {
     accountId: otherWorker.body.id,
   })
@@ -507,6 +558,11 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(secondPreview.status, 201)
   assert.notEqual(secondPreview.body.id, firstPreview.body.id)
 
+  const hiddenManagerPreview = await request(port, `/api/reports/${reportId}`, {
+    accountId: manager.body.id,
+  })
+  assert.equal(hiddenManagerPreview.status, 404)
+
   const repeatedPreviewUpload = await request(port, `/api/reports/${reportId}/documents`, {
     method: 'POST',
     accountId: worker.body.id,
@@ -533,6 +589,57 @@ test('worker submits a report and admin processes server-persisted binaries', as
   assert.equal(submitted.status, 200)
   assert.equal(submitted.body.draft.status, 'exported')
   assert.deepEqual(submitted.body.draft.photoIds, [photo.id, secondaryPhoto.id])
+
+  const managerReports = await request(port, '/api/reports', { accountId: manager.body.id })
+  assert.equal(managerReports.status, 200)
+  assert.deepEqual(managerReports.body.map((item) => item.id), [reportId])
+
+  const managerDetails = await request(port, `/api/reports/${reportId}`, {
+    accountId: manager.body.id,
+  })
+  assert.equal(managerDetails.status, 200)
+  assert.equal(managerDetails.body.photos[0].blobBase64, photoBytes.toString('base64'))
+  assert.deepEqual(managerDetails.body.documents, submitted.body.documents)
+  const managerPdfBytes = Buffer.from(managerDetails.body.documents[0].blobBase64, 'base64')
+  assert.equal(managerPdfBytes.subarray(0, 5).toString('ascii'), '%PDF-')
+  const managerPreviews = await request(port, `/api/reports/${reportId}/photo-previews`, {
+    accountId: manager.body.id,
+  })
+  assert.equal(managerPreviews.status, 200)
+
+  for (const [method, endpoint, body] of [
+    ['GET', '/api/accounts'],
+    ['GET', `/api/accounts/${worker.body.id}`],
+    ['POST', '/api/accounts', { loginNumber: '3999', fullName: 'Forbidden', role: 'admin' }],
+    ['POST', '/api/accounts/generate-login-number', { role: 'manager' }],
+    ['DELETE', `/api/accounts/${worker.body.id}`],
+    ['POST', '/api/template-options', { field: 'productId', label: 'Forbidden' }],
+    ['DELETE', '/api/template-options/template-product-dairy'],
+    ['PUT', `/api/document-templates/${createTemplate().id}`, createTemplate()],
+    ['DELETE', `/api/document-templates/${createTemplate().id}`],
+    ['GET', '/api/reports/archive'],
+    ['GET', '/api/reports/mine'],
+    ['PUT', `/api/reports/${reportId}`, { draft: submitted.body.draft, photos: [photo] }],
+    ['PUT', '/api/reports/manager-created', { draft: createDraft('manager-created', manager.body.id), photos: [] }],
+    ['DELETE', `/api/reports/${reportId}`],
+    ['POST', `/api/reports/archive/${reportId}`],
+    ['DELETE', `/api/reports/archive/${reportId}`],
+    ['POST', `/api/reports/${reportId}/submit`],
+    ['POST', `/api/reports/${reportId}/documents/generate`],
+    ['POST', `/api/reports/${reportId}/documents`, secondPreview.body],
+  ]) {
+    const forbiddenManagerAction = await request(port, endpoint, {
+      method,
+      accountId: manager.body.id,
+      body,
+    })
+    assert.equal(forbiddenManagerAction.status, 403, `${method} ${endpoint}`)
+  }
+
+  const unchangedAfterManagerActions = await request(port, `/api/reports/${reportId}`, {
+    accountId: manager.body.id,
+  })
+  assert.deepEqual(unchangedAfterManagerActions.body, managerDetails.body)
 
   const immutableSubmission = await request(port, `/api/reports/${reportId}`, {
     method: 'PUT',
@@ -677,6 +784,15 @@ test('worker submits a report and admin processes server-persisted binaries', as
   })
   assert.equal(workerArchivedDetails.status, 404)
 
+  const managerArchivedList = await request(port, '/api/reports', { accountId: manager.body.id })
+  assert.deepEqual(managerArchivedList.body, [])
+  for (const suffix of ['', '/photo-previews']) {
+    const managerArchivedDetails = await request(port, `/api/reports/${reportId}${suffix}`, {
+      accountId: manager.body.id,
+    })
+    assert.equal(managerArchivedDetails.status, 404)
+  }
+
   const archivedReports = await request(port, '/api/reports/archive', {
     accountId: admin.body.id,
   })
@@ -726,6 +842,10 @@ test('worker submits a report and admin processes server-persisted binaries', as
   })
   assert.equal(restoredDetails.status, 200)
   assert.equal(restoredDetails.body.draft.status, 'exported')
+  const managerRestoredDetails = await request(port, `/api/reports/${reportId}`, {
+    accountId: manager.body.id,
+  })
+  assert.equal(managerRestoredDetails.status, 200)
   assert.equal(restoredDetails.body.photos[0].blobBase64, photoBytes.toString('base64'))
   assert.equal(
     restoredDetails.body.documents.find((item) => item.id === document.body.id)?.blobBase64,

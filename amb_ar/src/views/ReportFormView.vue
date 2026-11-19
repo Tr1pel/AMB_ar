@@ -1279,7 +1279,7 @@ function buildReportInput() {
   const workerAccountId = authStore.currentAccount?.id
 
   if (!workerAccountId) {
-    throw new Error('Не выбран аккаунт работника')
+    throw new Error('Не выбран аккаунт специалиста')
   }
 
   const resolvedCustomFieldValues = { ...customFieldValues }

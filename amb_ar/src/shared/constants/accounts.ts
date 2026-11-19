@@ -1,5 +1,17 @@
 import type { AccountRole } from '@/types/report'
 
+export const ACCOUNT_ROLE_LABELS: Record<AccountRole, string> = {
+  admin: 'Администратор',
+  manager: 'Менеджер',
+  worker: 'Специалист',
+}
+
+export const ACCOUNT_HOME_ROUTES: Record<AccountRole, string> = {
+  admin: 'admin-reports',
+  manager: 'manager-reports',
+  worker: 'worker-reports',
+}
+
 export interface SeedAccount {
   id: string
   loginNumber: string

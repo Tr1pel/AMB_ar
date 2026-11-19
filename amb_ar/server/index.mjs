@@ -27,6 +27,7 @@ const MAX_PHOTO_SIZE_BYTES = 15 * 1024 * 1024
 const MAX_DOCUMENT_SIZE_BYTES = 50 * 1024 * 1024
 const MAX_PHOTOS_PER_REPORT = 100
 const ARCHIVE_PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000
+const ACCOUNT_ROLES = new Set(['admin', 'manager', 'worker'])
 const WORKER_REPORT_STATUSES = new Set(['draft', 'ready'])
 const REQUIRED_REPORT_TEMPLATE_FIELDS = [
   {
@@ -190,7 +191,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
 
   if (pathname === '/api/auth/demo' && method === 'POST') {
     const input = await readJsonBody(request)
-    const role = input.role === 'admin' ? 'admin' : 'worker'
+    const role = requireAccountRole(input.role)
     const account = db.accounts.find(
       (item) => item.role === role && item.isActive && isVisibleEntity(item),
     )
@@ -230,13 +231,9 @@ async function handleApiRequest(request, response, requestUrl, db) {
   if (pathname === '/api/accounts/generate-login-number' && method === 'POST') {
     requireAdmin(request, db)
     const input = await readJsonBody(request)
-    const role = input.role === 'admin' ? 'admin' : input.role === 'worker' ? 'worker' : null
+    const role = requireAccountRole(input.role)
 
-    if (!role) {
-      throw createHttpError(400, 'Выберите роль для генерации номера')
-    }
-
-    const prefix = role === 'admin' ? '1' : '2'
+    const prefix = { admin: '1', manager: '3', worker: '2' }[role]
     const loginNumberPattern = new RegExp(`^${prefix}\\d{3}$`)
     const numericLoginNumbers = db.accounts
       .filter(isVisibleEntity)
@@ -281,7 +278,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
     }
 
     const now = Date.now()
-    const role = input.role === 'admin' ? 'admin' : 'worker'
+    const role = requireAccountRole(input.role)
     const isActive = Boolean(input.isActive ?? existing?.isActive ?? true)
 
     ensureCanChangeAdmin(db, existing, { role, isActive }, currentAccount.id)
@@ -521,11 +518,18 @@ async function handleApiRequest(request, response, requestUrl, db) {
   }
 
   if (pathname === '/api/reports' && method === 'GET') {
-    requireAdmin(request, db)
+    const account = requireAccount(request, db)
+
+    if (account.role !== 'admin' && account.role !== 'manager') {
+      throw createHttpError(403, 'Нет доступа к журналу отчетов')
+    }
+
     sendJson(
       response,
       visibleReports(db).filter(
-        (report) => report.status === 'ready' || report.status === 'exported',
+        (report) => account.role === 'manager'
+          ? isCompletedReport(db, report)
+          : report.status === 'ready' || report.status === 'exported',
       ),
     )
     return true
@@ -608,6 +612,11 @@ async function handleApiRequest(request, response, requestUrl, db) {
 
   if (pathname === '/api/reports/mine' && method === 'GET') {
     const account = requireAccount(request, db)
+
+    if (account.role !== 'worker') {
+      throw createHttpError(403, 'История собственных отчетов доступна только специалисту')
+    }
+
     sendJson(
       response,
       visibleReports(db).filter((report) => report.workerAccountId === account.id),
@@ -620,6 +629,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
   if (generatedDocumentMatch && method === 'POST') {
     const reportId = decodeURIComponent(generatedDocumentMatch[1])
     const account = requireAccount(request, db)
+    requireReportWriteAccess(account)
     const draft = requireReportAccess(db, reportId, account)
 
     if (draft.status !== 'draft' && draft.status !== 'ready' && draft.status !== 'exported') {
@@ -738,6 +748,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
   if (documentMatch && method === 'POST') {
     const reportId = decodeURIComponent(documentMatch[1])
     const account = requireAccount(request, db)
+    requireReportWriteAccess(account)
     const draft = requireReportAccess(db, reportId, account)
     const input = await readJsonBody(request)
 
@@ -858,7 +869,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
     normalizeEntityId(reportId, 'Идентификатор отчета')
 
     if (account.role !== 'worker') {
-      throw createHttpError(403, 'Отчеты создаются и редактируются только работниками')
+      throw createHttpError(403, 'Отчеты создаются и редактируются только специалистами')
     }
 
     const existingDraft = db.reportDrafts.find((item) => item.id === reportId)
@@ -882,7 +893,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
     const status = String(incomingDraft.status ?? 'draft')
 
     if (!WORKER_REPORT_STATUSES.has(status)) {
-      throw createHttpError(400, 'Работник может сохранить только черновик или отправленный отчет')
+      throw createHttpError(400, 'Специалист может сохранить только черновик или отправленный отчет')
     }
 
     const template = resolveReportTemplate(db, incomingDraft.templateId, existingDraft)
@@ -1026,6 +1037,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
 
   if (reportId && method === 'DELETE') {
     const account = requireAccount(request, db)
+    requireReportWriteAccess(account)
     const draft = requireReportAccess(db, reportId, account)
 
     if (draft.status === 'archived') {
@@ -1033,7 +1045,7 @@ async function handleApiRequest(request, response, requestUrl, db) {
     }
 
     if (account.role === 'worker' && draft.status !== 'draft') {
-      throw createHttpError(409, 'Работник может удалить только черновик')
+      throw createHttpError(409, 'Специалист может удалить только черновик')
     }
 
     const deletedAt = Date.now()
@@ -1881,6 +1893,12 @@ function visibleReports(db) {
     .sort((first, second) => second.updatedAt - first.updatedAt)
 }
 
+function isCompletedReport(db, report) {
+  return report.status === 'exported' && db.generatedDocuments.some(
+    (document) => document.draftId === report.id && isVisibleEntity(document),
+  )
+}
+
 function requireReportAccess(db, reportId, account, includeArchived = false) {
   const draft = db.reportDrafts.find(
     (item) =>
@@ -1893,6 +1911,14 @@ function requireReportAccess(db, reportId, account, includeArchived = false) {
     throw createHttpError(404, 'Отчет не найден')
   }
 
+  if (account.role === 'manager') {
+    if (!isCompletedReport(db, draft)) {
+      throw createHttpError(404, 'Отчет не найден')
+    }
+
+    return draft
+  }
+
   if (account.role !== 'admin' && draft.workerAccountId !== account.id) {
     throw createHttpError(403, 'Нет доступа к этому отчету')
   }
@@ -1902,6 +1928,20 @@ function requireReportAccess(db, reportId, account, includeArchived = false) {
   }
 
   return draft
+}
+
+function requireAccountRole(role) {
+  if (!ACCOUNT_ROLES.has(role)) {
+    throw createHttpError(400, 'Выберите роль: Администратор, Менеджер или Специалист')
+  }
+
+  return role
+}
+
+function requireReportWriteAccess(account) {
+  if (account.role === 'manager') {
+    throw createHttpError(403, 'Менеджеру доступен только просмотр и скачивание готовых отчетов')
+  }
 }
 
 function requireAdmin(request, db) {

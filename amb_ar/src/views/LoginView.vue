@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import { ACCOUNT_HOME_ROUTES } from '@/shared/constants/accounts'
 import { useAuthStore } from '@/stores/auth.store'
 import type { AccountRole } from '@/types/report'
 
@@ -9,8 +10,10 @@ const authStore = useAuthStore()
 const router = useRouter()
 const loginNumber = ref('')
 const password = ref('')
+const isPasswordVisible = ref(false)
 
 async function handleSignIn(): Promise<void> {
+  isPasswordVisible.value = false
   const account = await authStore.signIn(loginNumber.value, password.value)
 
   if (account) {
@@ -19,7 +22,7 @@ async function handleSignIn(): Promise<void> {
 }
 
 async function goToWorkspace(role: AccountRole): Promise<void> {
-  await router.push(role === 'admin' ? { name: 'admin-reports' } : { name: 'worker-reports' })
+  await router.push({ name: ACCOUNT_HOME_ROUTES[role] })
 }
 </script>
 
@@ -38,32 +41,52 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
         </header>
 
         <form class="login-form" @submit.prevent="handleSignIn">
-        <label class="field-label" for="loginNumber">
-          Номер сотрудника
-          <input
-            id="loginNumber"
-            v-model="loginNumber"
-            class="field-control"
-            inputmode="numeric"
-            autocomplete="username"
-            placeholder="Например, 2001"
-            required
-          />
-        </label>
-        <label class="field-label" for="password">
-          Пароль
-          <input
-            id="password"
-            v-model="password"
-            class="field-control"
-            type="password"
-            autocomplete="current-password"
-            required
-          />
-        </label>
-        <button class="primary-button" type="submit" :disabled="authStore.isLoading">
-          {{ authStore.isLoading ? 'Проверяем...' : 'Войти' }}
-        </button>
+          <label class="field-label" for="loginNumber">
+            Номер сотрудника
+            <input
+              id="loginNumber"
+              v-model="loginNumber"
+              class="field-control"
+              inputmode="numeric"
+              autocomplete="username"
+              placeholder="Например, 2001"
+              required
+            />
+          </label>
+          <div class="field-label">
+            <label for="password">Пароль</label>
+            <div class="password-field">
+              <input
+                id="password"
+                v-model="password"
+                class="field-control"
+                :type="isPasswordVisible ? 'text' : 'password'"
+                autocomplete="current-password"
+                required
+              />
+              <button
+                class="password-toggle"
+                type="button"
+                aria-controls="password"
+                :aria-label="isPasswordVisible ? 'Скрыть пароль' : 'Показать пароль'"
+                :title="isPasswordVisible ? 'Скрыть пароль' : 'Показать пароль'"
+                @click="isPasswordVisible = !isPasswordVisible"
+              >
+                <img
+                  :src="
+                    isPasswordVisible
+                      ? '/icons/eye-slash-svgrepo-com.svg'
+                      : '/icons/eye-svgrepo-com.svg'
+                  "
+                  alt=""
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
+          </div>
+          <button class="primary-button" type="submit" :disabled="authStore.isLoading">
+            {{ authStore.isLoading ? 'Проверяем...' : 'Войти' }}
+          </button>
         </form>
 
         <p v-if="authStore.errorMessage" class="error-message">{{ authStore.errorMessage }}</p>
@@ -85,8 +108,7 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
   flex-direction: column;
   padding: clamp(28px, 5vw, 64px);
   background:
-    linear-gradient(145deg, rgba(198, 122, 36, 0.08), transparent 40%),
-    var(--color-primary);
+    linear-gradient(145deg, rgba(198, 122, 36, 0.08), transparent 40%), var(--color-primary);
   color: #ffffff;
 }
 
@@ -304,6 +326,49 @@ async function goToWorkspace(role: AccountRole): Promise<void> {
 .login-form {
   grid-template-columns: 1fr;
   align-items: end;
+}
+
+.password-field {
+  position: relative;
+}
+
+.password-field .field-control {
+  padding-inline-end: 56px;
+}
+
+.password-field .field-control::-ms-reveal {
+  display: none;
+}
+
+.password-toggle {
+  position: absolute;
+  inset-inline-end: 3px;
+  top: 50%;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.password-toggle:hover {
+  background: var(--color-primary-soft);
+}
+
+.password-toggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.password-toggle img {
+  display: block;
+  width: 22px;
+  height: 22px;
 }
 
 .login-panel footer {

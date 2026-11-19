@@ -248,12 +248,12 @@ export async function createReportDraft(
   return { draft, photos, documents: [] }
 }
 
-export async function listReportDrafts(adminAccountId?: string): Promise<ReportDraft[]> {
-  if (!adminAccountId) {
+export async function listReportDrafts(accountId?: string): Promise<ReportDraft[]> {
+  if (!accountId) {
     return []
   }
 
-  const reports = await apiGet<ReportDraft[]>('/api/reports', adminAccountId)
+  const reports = await apiGet<ReportDraft[]>('/api/reports', accountId)
   return reports.filter(hasVisibleReportContent)
 }
 
@@ -326,7 +326,17 @@ async function hideLocallyArchivedWorkerReports(
 export async function getReportDraftDetails(
   draftId: string,
   accountId: string,
+  options: { serverOnly?: boolean } = {},
 ): Promise<ReportDraftDetails | null> {
+  // Read-only managers always use the server's current access decision, including
+  // after a specialist account changes role while local drafts still exist.
+  if (options.serverOnly) {
+    return deserializeDetails(await apiGet<ServerReportDetails>(
+      `/api/reports/${encodeURIComponent(draftId)}`,
+      accountId,
+    ))
+  }
+
   const localDetails = await getLocalReportDetails(draftId)
 
   // A worker draft is always stored together with its local photos and template

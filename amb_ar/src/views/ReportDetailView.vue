@@ -47,11 +47,25 @@ const backRoute = computed(() => {
     return { name: 'admin-report-archive' }
   }
 
-  return authStore.isAdmin ? { name: 'admin-reports' } : { name: 'worker-reports' }
+  return { name: authStore.homeRoute }
 })
 
 onMounted(async () => {
+  await openReport()
+
+  if (viewerRef.value) {
+    resizeObserver = new ResizeObserver(scheduleRender)
+    resizeObserver.observe(viewerRef.value)
+  }
+})
+
+async function openReport(): Promise<void> {
   await reportDraftStore.loadReport(props.reportId)
+
+  if (!report.value) {
+    previewError.value = reportDraftStore.errorMessage || 'Отчет не найден'
+    return
+  }
 
   if (
     authStore.isWorker &&
@@ -63,12 +77,7 @@ onMounted(async () => {
   }
 
   await prepareDocument()
-
-  if (viewerRef.value) {
-    resizeObserver = new ResizeObserver(scheduleRender)
-    resizeObserver.observe(viewerRef.value)
-  }
-})
+}
 
 onUnmounted(() => {
   documentGeneration += 1
@@ -277,7 +286,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
         {{
           isInspectorReview
             ? 'Вернуться к редактированию'
-            : authStore.isAdmin
+            : !authStore.isWorker
               ? 'К списку отчётов'
               : 'К истории'
         }}
@@ -320,7 +329,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
         >
           Вернуться к редактированию
         </RouterLink>
-        <button v-else class="secondary-button" type="button" @click="prepareDocument">
+        <button v-else class="secondary-button" type="button" @click="openReport">
           Попробовать снова
         </button>
       </div>

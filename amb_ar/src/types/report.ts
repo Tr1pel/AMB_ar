@@ -1,6 +1,6 @@
 export type SyncStatus = 'synced' | 'pending' | 'conflicted'
 
-export type AccountRole = 'admin' | 'worker'
+export type AccountRole = 'admin' | 'manager' | 'worker'
 
 export type ReportStatus = 'draft' | 'ready' | 'exported' | 'archived'
 
